@@ -42,7 +42,8 @@ active_live_events = {} # event_key -> { "type": str, "name": str, "started_at":
 ROBLOX_LINK_RE  = re.compile(r"https://www\.roblox\.com/share\?\S+")
 BIOME_MATCH_RE  = re.compile(r"(?:Biome\s+(?:Started|Ended)(?:\s*:\s*|\s*-\s*))([A-Z_]+)", re.IGNORECASE)
 EVENT_START_RE  = re.compile(r"\b(started|start|spawned|arrived|appeared|has arrived|is here)\b", re.IGNORECASE)
-EVENT_END_RE    = re.compile(r"\b(ended|end|despawned|left|gone|has left)\b", re.IGNORECASE)
+# EXPANDED END REGEX: Added 'disappeared', 'expired', 'timed out'
+EVENT_END_RE    = re.compile(r"\b(ended|end|despawned|left|gone|has left|disappeared|expired|timed out)\b", re.IGNORECASE)
 KNOWN_BIOMES    = ["SINGULARITY", "GLITCHED", "DREAMSPACE", "CYBERSPACE", "STARFALL", "CORRUPTION", "WINDY", "SNOWY", "RAINY", "HELL", "NORMAL", "SAND"]
 CLEAN_WORDS_RE  = re.compile(r"\b[A-Z]{4,}\b")
 
@@ -493,6 +494,10 @@ async def on_message(message):
 
         is_start = bool(EVENT_START_RE.search(combined_text_lower))
         is_end = bool(EVENT_END_RE.search(combined_text_lower))
+        
+        # DEBUG PRINT: Helpful to see if the end regex is catching the message
+        if is_end:
+            print(f"DEBUG: Triggered END logic for: {combined_text_lower[:50]}")
 
         if not is_start and not is_end:
             continue
@@ -664,4 +669,4 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 if TOKEN:
     bot.run(TOKEN)
 else:
-    print("CRITICAL ERROR: Missing 'DISCORD_TOKEN' inside Environment Settings!")
+    print("Error: DISCORD_TOKEN environment variable not set.")
