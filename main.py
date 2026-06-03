@@ -76,10 +76,16 @@ def clean_entity_name(raw_name):
         return ""
     # Strip markdown emphasis blocks
     clean = raw_name.replace("**", "").replace("*", "").replace("__", "").replace("`", "").strip()
+    # Strip custom Discord timestamps/tags like <t:1780458194:F>
+    clean = re.sub(r'<[^>]+>', '', clean).strip()
     # Strip leading weird symbols, non-alphanumeric clutter, and layout emojis
     clean = re.sub(r'^[^A-Za-z0-9\s\(]+', '', clean).strip()
     # Collapse multiple consecutive blank spaces into a single space
     clean = re.sub(r'\s+', ' ', clean)
+    
+    # Catch structural edge cases where a label header leaks into the field value
+    if clean.lower() in ["started", "ended", "spawned", "arrived", "unknown", ""]:
+        return ""
     return clean
 
 @bot.event
@@ -95,7 +101,8 @@ async def on_ready():
         for channel in guild.text_channels:
             is_target = any(keyword in channel.name.lower() for keyword in TARGET_KEYWORDS)
             tag = "[🔥 TARGET MATCH]" if is_target else "[🔹 Text Context]"
-            logging.info(f"   {tag} ID: {channel.id.ljust(19)} | #{channel.name}")
+            # FIXED: Converted channel.id to string before running string space justification padding
+            logging.info(f"   {tag} ID: {str(channel.id).ljust(19)} | #{channel.name}")
     logging.info("📋 --- END OF VISIBLE CHANNELS CHECKLIST ---")
     print("="*60 + "\n")
 
@@ -119,14 +126,15 @@ async def on_message(message):
 
     text_to_search = message.content or ""
     
+    # Restructured tracking labels to break down separate embed elements elegantly
     if message.embeds:
         for embed in message.embeds:
             if embed.title:
-                text_to_search += f"\n{embed.title}"
+                text_to_search += f"\nTitle: {embed.title}"
             if embed.description:
-                text_to_search += f"\n{embed.description}"
+                text_to_search += f"\nDescription: {embed.description}"
             for field in embed.fields:
-                text_to_search += f"\n{field.name} {field.value}"
+                text_to_search += f"\nField Name: {field.name}\nField Value: {field.value}"
 
     if not text_to_search.strip():
         return
@@ -139,22 +147,68 @@ async def on_message(message):
         entity_name = ""
         event_type = "BIOME DROP" if is_biome else "MERCHANT SPAWN"
         
+        # ------------------------------------------------------------
+        # STRATIFIED BIOME EXTRACTION LAYER
+        # ------------------------------------------------------------
         if is_biome:
+            # Strategy A: Same-line extraction
             biome_match = re.search(r'Biome\s*Started[\s\*\:\-]*([^\n]+)', text_to_search, re.IGNORECASE)
             if biome_match:
                 entity_name = clean_entity_name(biome_match.group(1))
+            
+            # Strategy B: Multi-line / Separate Field layout translation
+            if not entity_name:
+                lines = text_to_search.split("\n")
+                for i, line in enumerate(lines):
+                    if "biome started" in line.lower() and i + 1 < len(lines):
+                        next_line = lines[i+1]
+                        if "field value:" in next_line.lower():
+                            entity_name = clean_entity_name(next_line.split("Field Value:", 1)[1])
+                            break
+                        else:
+                            entity_name = clean_entity_name(next_line)
+                            if entity_name: 
+                                break
+
+            # Strategy C: General structural keyword fallback catch
+            if not entity_name:
+                for line in text_to_search.split("\n"):
+                    if "biome:" in line.lower() and "started" not in line.lower():
+                        entity_name = clean_entity_name(line.split("Biome:", 1)[1])
+                        if entity_name: 
+                            break
+            
             if not entity_name:
                 entity_name = "Unknown Biome"
             
+        # ------------------------------------------------------------
+        # STRATIFIED MERCHANT EXTRACTION LAYER
+        # ------------------------------------------------------------
         else:
             if "Mari" in text_to_search:
                 entity_name = "Merchant (Mari)"
             elif "Jester" in text_to_search:
                 entity_name = "Merchant (Jester)"
             else:
+                # Strategy A: Same-line extraction
                 merchant_match = re.search(r'Merchant(?:s)?(?:[\s\w]+)?[\s\*\:\-]*([^\n]+)', text_to_search, re.IGNORECASE)
                 if merchant_match:
                     entity_name = clean_entity_name(merchant_match.group(1))
+                
+                # Strategy B: Multi-line layout translation
+                if not entity_name:
+                    lines = text_to_search.split("\n")
+                    for i, line in enumerate(lines):
+                        if "merchant" in line.lower() and i + 1 < len(lines):
+                            next_line = lines[i+1]
+                            if "field value:" in next_line.lower():
+                                entity_name = clean_entity_name(next_line.split("Field Value:", 1)[1])
+                                break
+                            else:
+                                entity_name = clean_entity_name(next_line)
+                                if entity_name: 
+                                    break
+                
                 if not entity_name:
                     entity_name = "Traveling Merchant"
             
