@@ -27,6 +27,10 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Path to preserve counting data locally (Secondary fallback layer)
 DATA_STORE_PATH = "metrics_store.json"
 
+# Auto-detect configuration for new containers (Guilds or Categories)
+AUTO_DETECT_CONTAINERS = {1501595856493740162, 1511360799996907710, 1509915924663238776}
+dynamic_detected_channels = set()
+
 # 3. Advanced Global Metric Trackers
 biome_counts = {}
 merchant_counts = {}
@@ -45,7 +49,7 @@ def load_persisted_metrics():
                 webhook_activity = stored_data.get("webhook_activity", {})
                 logging.info(f"💾 LOCAL ENGINE: Restored metrics fallback cache from {DATA_STORE_PATH}")
         except Exception as e:
-            logging.error(f"⚠️ LOCAL ENGINE: Error reading local cache state: {e}")
+                logging.error(f"⚠️ LOCAL ENGINE: Error reading local cache state: {e}")
 
 def save_persisted_metrics():
     """Saves current state counters to local file system payload."""
@@ -325,8 +329,23 @@ async def on_ready():
     # Pull master state from cloud backup before activation sequence triggers
     await load_state_from_discord_cloud()
     
+    # Auto-detect existing text channels inside designated target containers on boot sequence
+    for guild in bot.guilds:
+        for channel in guild.text_channels:
+            if guild.id in AUTO_DETECT_CONTAINERS or (channel.category_id in AUTO_DETECT_CONTAINERS):
+                dynamic_detected_channels.add(channel.id)
+                
+    logging.info(f"📡 AUTO-DETECT: Initialized and cached {len(dynamic_detected_channels)} text channels from monitored containers.")
     logging.info("SYSTEM ONLINE: Logged into Discord Gateway successfully.")
     logging.info("Your service is live and tracking 🚀")
+
+@bot.event
+async def on_guild_channel_create(channel):
+    """Listens for newly spawned channels in runtime and auto-subscribes if inside container scope."""
+    if isinstance(channel, discord.TextChannel):
+        if channel.guild.id in AUTO_DETECT_CONTAINERS or (channel.category_id in AUTO_DETECT_CONTAINERS):
+            dynamic_detected_channels.add(channel.id)
+            logging.info(f"📡 AUTO-DETECT: New target stream channel #{channel.name} ({channel.id}) spawned in monitored container! Added to dynamic filters.")
 
 @bot.event
 async def on_message(message):
@@ -338,9 +357,8 @@ async def on_message(message):
 
     is_monitored_channel = (
         message.channel.id in missing_channel_whitelist or
-        "webhook" in channel_name or
-        "forward" in channel_name or
-        "found" in channel_name
+        message.channel.id in dynamic_detected_channels or
+        "webhook" in channel_name
     )
 
     if not is_monitored_channel:
@@ -348,7 +366,7 @@ async def on_message(message):
 
     cid_str = str(message.channel.id)
     now_iso = datetime.now(timezone.utc).isoformat()
-    is_forwarder = "forward" in channel_name
+    is_forwarder = False
 
     # Check for private server link string globally across both Start/End frames
     combined_embed_text = ""
