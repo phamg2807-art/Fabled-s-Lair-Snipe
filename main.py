@@ -82,7 +82,7 @@ async def backup_state_to_discord_cloud():
         channel = bot.get_channel(int(state_channel_id))
     if not channel:
         for guild in bot.guilds:
-            channel = discord.utils.get(guild.text_channels, name="sjp-state-db")
+            channel = discord.utils.get(guild.text_channels, name="telemetry-state-db")
             if channel:
                 break
                 
@@ -99,7 +99,7 @@ async def backup_state_to_discord_cloud():
                 json.dump(payload, f, ensure_ascii=False)
             
             await channel.send(
-                content=f"🔄 **SjpWorkspace Cloud Backup Instance** | Timestamp: `{datetime.now(timezone.utc).isoformat()}`",
+                content=f"🔄 **Telemetry Cloud Backup Instance** | Timestamp: `{datetime.now(timezone.utc).isoformat()}`",
                 file=discord.File(temp_file)
             )
             logging.info("💾 CLOUD DATABASE: Successfully synced latest database state up to Discord storage channel.")
@@ -120,7 +120,7 @@ async def load_state_from_discord_cloud():
         channel = bot.get_channel(int(state_channel_id))
     if not channel:
         for guild in bot.guilds:
-            channel = discord.utils.get(guild.text_channels, name="sjp-state-db")
+            channel = discord.utils.get(guild.text_channels, name="telemetry-state-db")
             if channel:
                 break
                 
@@ -208,7 +208,7 @@ class RenderHealthCheckHandler(BaseHTTPRequestHandler):
         <html>
         <head>
             <meta charset="utf-8">
-            <title>SjpWorkspace - Multi-Account Telemetry Hub</title>
+            <title>Telemetry Hub - Multi-Account Dashboard</title>
             <style>
                 body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0b0c10; color: #c5c6c7; padding: 30px; margin: 0; }}
                 .container {{ max-width: 1200px; margin: 0 auto; }}
@@ -234,7 +234,7 @@ class RenderHealthCheckHandler(BaseHTTPRequestHandler):
         </head>
         <body>
             <div class="container">
-                <h1>⚡ SjpWorkspace - Multi-Account Telemetry Hub</h1>
+                <h1>⚡ Multi-Account Telemetry Hub</h1>
                 <p>System Status: <span style="color:#66fcf1; font-weight:bold;">ONLINE</span> | Cloud Sync: <span style="color:#2ecc71; font-weight:bold;">ACTIVE</span></p>
                 
                 <div class="stat-grid">
@@ -335,10 +335,8 @@ def keep_alive():
 @bot.event
 async def on_ready():
     load_persisted_metrics()
-    # Pull master state from cloud backup before activation sequence triggers
     await load_state_from_discord_cloud()
     
-    # Auto-detect existing text channels inside designated target containers on boot sequence
     for guild in bot.guilds:
         for channel in guild.text_channels:
             if guild.id in AUTO_DETECT_CONTAINERS or (channel.category_id in AUTO_DETECT_CONTAINERS):
@@ -350,7 +348,6 @@ async def on_ready():
 
 @bot.event
 async def on_guild_channel_create(channel):
-    """Listens for newly spawned channels in runtime and auto-subscribes if inside container scope."""
     if isinstance(channel, discord.TextChannel):
         if channel.guild.id in AUTO_DETECT_CONTAINERS or (channel.category_id in AUTO_DETECT_CONTAINERS):
             dynamic_detected_channels.add(channel.id)
@@ -361,9 +358,7 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # Benchmark tracking point to compute precision metrics execution lag for telemetry visualization
     start_processing_time = time.perf_counter()
-
     channel_name = message.channel.name.lower()
     missing_channel_whitelist = {1511359721632694363, 1511365304624877568, 1511335720239759361, 1511362877322432792}
 
@@ -381,7 +376,6 @@ async def on_message(message):
     is_forwarder = False
     link_detection_vector = "None"
 
-    # Optimization: Combine structural search streams instantly 
     combined_embed_text = message.content or ""
     if message.embeds:
         for embed in message.embeds:
@@ -397,7 +391,6 @@ async def on_message(message):
                     combined_embed_text += f" {component.url}"
                     link_detection_vector = "Interaction Button Component Link"
 
-    # Use the precompiled global regex for sub-millisecond execution speeds
     link_match = ROBLOX_LINK_RE.search(combined_embed_text)
     roblox_link = link_match.group(0) if link_match else None
     
@@ -450,7 +443,6 @@ async def on_message(message):
         combined_text = " ".join(text_elements)
         combined_text_lower = combined_text.lower()
 
-        # Ultra-precise trigger match validation using pre-compiled lookups
         is_start = bool(EVENT_START_RE.search(combined_text_lower))
         is_end = bool(EVENT_END_RE.search(combined_text_lower))
 
@@ -475,19 +467,25 @@ async def on_message(message):
             else: merchant_name = "MERCHANT"
 
             event_type = "SPAWNED" if is_start else "DESPAWNED"
-            
-            if is_end and not roblox_link:
+            event_key = f"{cid_str}_{account_identity}_{merchant_name}"
+            duration_str = "N/A"
+            found_start_event = None
+            target_key = event_key
+
+            # --- SMART TRACKING FALLBACK ENGINE ---
+            if event_key in active_live_events:
+                found_start_event = active_live_events[event_key]
+            else:
                 for k, ev in list(active_live_events.items()):
                     if k.startswith(f"{cid_str}_") and ev["name"] == merchant_name:
+                        target_key = k
+                        found_start_event = ev
                         account_identity = ev["account_identity"]
                         if ev["link"] != "None":
                             roblox_link = ev["link"]
-                            link_detection_vector = "Smart Historical Frame Inheritance"
+                            link_detection_vector = "Smart Historical Profile Match"
                         break
 
-            event_key = f"{cid_str}_{account_identity}_{merchant_name}"
-            duration_str = "N/A"
-            
             if is_start:
                 merchant_counts[merchant_name] = merchant_counts.get(merchant_name, 0) + 1
                 active_live_events[event_key] = {
@@ -500,38 +498,31 @@ async def on_message(message):
                     "link": roblox_link or "None"
                 }
             else:
-                if event_key in active_live_events:
-                    start_dt = datetime.fromisoformat(active_live_events[event_key]["started_at"])
+                if found_start_event:
+                    start_dt = datetime.fromisoformat(found_start_event["started_at"])
                     delta = datetime.now(timezone.utc) - start_dt
                     duration_str = f"{int(delta.total_seconds() // 60)}m {int(delta.total_seconds() % 60)}s"
-                    active_live_events.pop(event_key, None)
+                    active_live_events.pop(target_key, None)
                     
                     if not is_forwarder and roblox_link and roblox_link in webhook_activity[cid_str]["accounts"]:
                         webhook_activity[cid_str]["accounts"][roblox_link]["completed_sessions"].append({
                             "name": merchant_name, "duration": duration_str, "at": now_iso
                         })
+                else:
+                    duration_str = "N/A (Start missed)"
 
-            # Performance Optimization: Push file write onto worker threads so loop execution remains smooth
             await asyncio.to_thread(save_persisted_metrics)
             await backup_state_to_discord_cloud()
             metrics = get_metrics_payload()
-
             execution_delay_ms = (time.perf_counter() - start_processing_time) * 1000
 
-            print("┌─── [⚡ SJP ENGINE - MERCHANT TELEMETRY] ──────────────────────────────────┐")
-            print(f"│ 🎯 Event State: {event_type:<11} | Target Context: {account_identity:<21} │")
-            print("├───[ CONNECTION SCOPE ]────────────────────────────────────────────────────┤")
-            print(f"│ 💬 Channel     : #{message.channel.name:<54} │")
-            print(f"│ 🏰 Server      : {guild_name:<55} │")
-            print("├───[ PERFORMANCE & LOGIC MATCH ]──────────────────────────────────────────┤")
-            print(f"│ 🧩 Merchant    : {merchant_name:<55} │")
-            print(f"│ ⏱️ Session Time : {duration_str:<55} │")
-            print(f"│ 🔗 Roblox Link : {str(roblox_link):<55} │")
-            print(f"│ 🔍 Match Vector: {link_detection_vector:<55} │")
-            print(f"│ ⚡ Engine Lag  : {execution_delay_ms:.2f}ms processing latency                        │")
-            print("├───[ CLUSTER MATRIX STATE ]────────────────────────────────────────────────┤")
-            print(f"│ 📡 Active Channels: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']:<47} │")
-            print("└───────────────────────────────────────────────────────────────────────────┘")
+            # --- HIGH-VISIBILITY COMPACT LOG FLOW ---
+            status_icon = "🟢" if is_start else "🔴"
+            print(f"📡 [MERCHANT] {event_type} {status_icon} | {merchant_name} | Context: {account_identity}")
+            print(f"   ↳ Channel: #{message.channel.name} ({guild_name})")
+            if roblox_link: print(f"   ↳ Link: {roblox_link} ({link_detection_vector})")
+            print(f"   ↳ Duration: {duration_str} | Delay: {execution_delay_ms:.2f}ms | Matrix Activity: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
+            print("─" * 80)
 
         else:
             biome_match = BIOME_MATCH_RE.search(combined_text)
@@ -547,19 +538,25 @@ async def on_message(message):
                     biome_name = filtered_words[0] if filtered_words else "UNKNOWN BIOME"
 
             event_type = "STARTED" if is_start else "ENDED"
-            
-            if is_end and not roblox_link:
+            event_key = f"{cid_str}_{account_identity}_{biome_name}"
+            duration_str = "N/A"
+            found_start_event = None
+            target_key = event_key
+
+            # --- SMART TRACKING FALLBACK ENGINE ---
+            if event_key in active_live_events:
+                found_start_event = active_live_events[event_key]
+            else:
                 for k, ev in list(active_live_events.items()):
                     if k.startswith(f"{cid_str}_") and ev["name"] == biome_name:
+                        target_key = k
+                        found_start_event = ev
                         account_identity = ev["account_identity"]
                         if ev["link"] != "None":
                             roblox_link = ev["link"]
-                            link_detection_vector = "Smart Historical Frame Inheritance"
+                            link_detection_vector = "Smart Historical Profile Match"
                         break
 
-            event_key = f"{cid_str}_{account_identity}_{biome_name}"
-            duration_str = "N/A"
-            
             if is_start:
                 biome_counts[biome_name] = biome_counts.get(biome_name, 0) + 1
                 active_live_events[event_key] = {
@@ -572,11 +569,11 @@ async def on_message(message):
                     "link": roblox_link or "None"
                 }
             else:
-                if event_key in active_live_events:
-                    start_dt = datetime.fromisoformat(active_live_events[event_key]["started_at"])
+                if found_start_event:
+                    start_dt = datetime.fromisoformat(found_start_event["started_at"])
                     delta = datetime.now(timezone.utc) - start_dt
                     duration_str = f"{int(delta.total_seconds() // 60)}m {int(delta.total_seconds() % 60)}s"
-                    active_live_events.pop(event_key, None)
+                    active_live_events.pop(target_key, None)
                     
                     if not is_forwarder and roblox_link and roblox_link in webhook_activity[cid_str]["accounts"]:
                         if len(webhook_activity[cid_str]["accounts"][roblox_link]["completed_sessions"]) >= 10:
@@ -584,28 +581,21 @@ async def on_message(message):
                         webhook_activity[cid_str]["accounts"][roblox_link]["completed_sessions"].append({
                             "name": biome_name, "duration": duration_str, "at": now_iso
                         })
+                else:
+                    duration_str = "N/A (Start missed)"
 
-            # Performance Optimization: Push file write onto worker threads so loop execution remains smooth
             await asyncio.to_thread(save_persisted_metrics)
             await backup_state_to_discord_cloud()
             metrics = get_metrics_payload()
-
             execution_delay_ms = (time.perf_counter() - start_processing_time) * 1000
 
-            print("┌─── [⚡ SJP ENGINE - BIOME TELEMETRY] ─────────────────────────────────────┐")
-            print(f"│ 🔮 Event State: {event_type:<11} | Target Context: {account_identity:<21} │")
-            print("├───[ CONNECTION SCOPE ]────────────────────────────────────────────────────┤")
-            print(f"│ 💬 Channel     : #{message.channel.name:<54} │")
-            print(f"│ 🏰 Server      : {guild_name:<55} │")
-            print("├───[ PERFORMANCE & LOGIC MATCH ]──────────────────────────────────────────┤")
-            print(f"│ 🧩 Biome Name  : {biome_name:<55} │")
-            print(f"│ ⏱️ Session Time : {duration_str:<55} │")
-            print(f"│ 🔗 Roblox Link : {str(roblox_link):<55} │")
-            print(f"│ 🔍 Match Vector: {link_detection_vector:<55} │")
-            print(f"│ ⚡ Engine Lag  : {execution_delay_ms:.2f}ms processing latency                        │")
-            print("├───[ CLUSTER MATRIX STATE ]────────────────────────────────────────────────┤")
-            print(f"│ 📡 Active Channels: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']:<47} │")
-            print("└───────────────────────────────────────────────────────────────────────────┘")
+            # --- HIGH-VISIBILITY COMPACT LOG FLOW ---
+            status_icon = "🟢" if is_start else "🔴"
+            print(f"🔮 [BIOME] {event_type} {status_icon} | {biome_name} | Context: {account_identity}")
+            print(f"   ↳ Channel: #{message.channel.name} ({guild_name})")
+            if roblox_link: print(f"   ↳ Link: {roblox_link} ({link_detection_vector})")
+            print(f"   ↳ Duration: {duration_str} | Delay: {execution_delay_ms:.2f}ms | Matrix Activity: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
+            print("─" * 80)
 
 # Fire up the HTTP keep-alive daemon thread before triggering the Discord loop
 threading.Thread(target=keep_alive, daemon=True).start()
