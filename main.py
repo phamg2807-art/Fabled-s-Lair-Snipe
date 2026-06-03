@@ -12,7 +12,8 @@ from supabase import create_client, Client
 # ==========================================
 logging.basicConfig(
     level=logging.INFO,
-    format='[%(levelname)s] %(message)s',
+    format='[%(asctime)s] [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[logging.StreamHandler()]
 )
 
@@ -45,11 +46,11 @@ supabase: Client = None
 if supabase_url and supabase_key:
     try:
         supabase = create_client(supabase_url, supabase_key)
-        logging.info("🔗 Successfully connected to the Supabase database backend!")
+        logging.info("🔗 Connected securely to the Supabase database backend cluster.")
     except Exception as e:
         logging.error(f"❌ Failed to connect to Supabase: {e}")
 else:
-    logging.warning("⚠️ Supabase credentials missing. Data will log to console but won't save to the database.")
+    logging.warning("⚠️ Supabase credentials missing. Running in standalone local logging mode.")
 
 # ==========================================
 # 3. DISCORD BOT SETUP
@@ -69,20 +70,34 @@ def extract_roblox_link(text):
     match = re.search(r'https://(?:[a-zA-Z0-9\-]+\.)?roblox\.com/[^\s\)\}\]\"\']+', text)
     return match.group(0) if match else None
 
+def clean_entity_name(raw_name):
+    """Deep cleans names by removing markdown artifacts, formatting leaks, and stray emojis."""
+    if not raw_name:
+        return ""
+    # Strip markdown emphasis blocks
+    clean = raw_name.replace("**", "").replace("*", "").replace("__", "").replace("`", "").strip()
+    # Strip leading weird symbols, non-alphanumeric clutter, and layout emojis
+    clean = re.sub(r'^[^A-Za-z0-9\s\(]+', '', clean).strip()
+    # Collapse multiple consecutive blank spaces into a single space
+    clean = re.sub(r'\s+', ' ', clean)
+    return clean
+
 @bot.event
 async def on_ready():
-    logging.info(f"🚀 {bot.user.name} has successfully logged into Discord Gateway!")
-    logging.info(f"📢 Hardcoded Fallback IDs from Render: {MONITORED_CHANNELS}")
+    print("\n" + "="*60)
+    logging.info(f"🚀 SYSTEM ONLINE: {bot.user.name} logged into Discord Gateway successfully.")
+    logging.info(f"📢 Active Hardcoded Fallbacks: {MONITORED_CHANNELS}")
+    print("="*60)
     
-    # DIAGNOSTIC TRACKER: Prints every single channel the bot can actually access
     logging.info("📋 --- START OF VISIBLE CHANNELS CHECKLIST ---")
     for guild in bot.guilds:
-        logging.info(f"🏰 Server Name: {guild.name}")
+        logging.info(f"🏰 Server: {guild.name}")
         for channel in guild.text_channels:
             is_target = any(keyword in channel.name.lower() for keyword in TARGET_KEYWORDS)
-            tag = "[🔥 TARGET MATCH]" if is_target else "[🔹 Text]"
-            logging.info(f"   {tag} ID: {channel.id} | Name: #{channel.name}")
+            tag = "[🔥 TARGET MATCH]" if is_target else "[🔹 Text Context]"
+            logging.info(f"   {tag} ID: {channel.id.ljust(19)} | #{channel.name}")
     logging.info("📋 --- END OF VISIBLE CHANNELS CHECKLIST ---")
+    print("="*60 + "\n")
 
 @bot.event
 async def on_message(message):
@@ -90,35 +105,30 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # Fetch the channel name safely (handles cases where channel names don't exist, like DMs)
+    # Fetch channel metadata safely
     channel_name = getattr(message.channel, "name", "").lower()
+    guild_name = getattr(message.channel.guild, "name", "Direct Message / Unknown")
     
     # Check if the channel matches any of our dynamic target keywords OR the backup ID list
     is_target_channel = any(keyword in channel_name for keyword in TARGET_KEYWORDS)
     is_fallback_id = message.channel.id in MONITORED_CHANNELS
 
-    # If it fails both checks, ignore the message completely
+    # If it fails both checks, drop it immediately without logging to keep streaming output pristine
     if not (is_target_channel or is_fallback_id):
         return
 
-    # Forced streaming trace tracker
-    logging.info(f"📩 [DEBUG] Bot captured an event from '{message.author}' in Channel: #{getattr(message.channel, 'name', 'Unknown')} (ID: {message.channel.id})")
-    
     text_to_search = message.content or ""
     
     if message.embeds:
-        logging.info(f"📦 [DEBUG] Message contains {len(message.embeds)} embed structure(s). Parsing content fields...")
         for embed in message.embeds:
             if embed.title:
                 text_to_search += f"\n{embed.title}"
-                logging.info(f"   🔹 Title parsed: {embed.title}")
             if embed.description:
                 text_to_search += f"\n{embed.description}"
             for field in embed.fields:
                 text_to_search += f"\n{field.name} {field.value}"
 
     if not text_to_search.strip():
-        logging.warning("⚠️ [DEBUG] Captured message text content is completely empty.")
         return
 
     # Dynamic parsing logic for both Biomes and Traveling Merchants
@@ -126,26 +136,17 @@ async def on_message(message):
     is_merchant = any(k in text_to_search for k in ["Merchant", "Mari", "Jester"])
 
     if is_biome or is_merchant:
-        # Print out the raw text for easy validation if a pattern shifts
-        logging.info(f"📝 [PARSER TRACE] Raw text blob to clean:\n{text_to_search.strip()}\n---")
         entity_name = ""
+        event_type = "BIOME DROP" if is_biome else "MERCHANT SPAWN"
         
         if is_biome:
-            # Captures everything remaining on the line following 'Biome Started'
             biome_match = re.search(r'Biome\s*Started[\s\*\:\-]*([^\n]+)', text_to_search, re.IGNORECASE)
             if biome_match:
-                raw_name = biome_match.group(1).strip()
-                # Strip clean of common markdown markers
-                raw_name = raw_name.replace("**", "").replace("*", "").replace("__", "").strip()
-                # Drop leading symbols/emojis to leave the pure text name
-                entity_name = re.sub(r'^[^A-Za-z0-9\s]+', '', raw_name).strip()
-            
+                entity_name = clean_entity_name(biome_match.group(1))
             if not entity_name:
                 entity_name = "Unknown Biome"
-            logging.info(f"🎯 Snipe detected! Parsed Biome: {entity_name}")
             
         else:
-            # Differentiate merchant types based on explicit names inside the text strings
             if "Mari" in text_to_search:
                 entity_name = "Merchant (Mari)"
             elif "Jester" in text_to_search:
@@ -153,32 +154,44 @@ async def on_message(message):
             else:
                 merchant_match = re.search(r'Merchant(?:s)?(?:[\s\w]+)?[\s\*\:\-]*([^\n]+)', text_to_search, re.IGNORECASE)
                 if merchant_match:
-                    raw_name = merchant_match.group(1).strip()
-                    raw_name = raw_name.replace("**", "").replace("*", "").strip()
-                    entity_name = re.sub(r'^[^A-Za-z0-9\s]+', '', raw_name).strip()
-                
+                    entity_name = clean_entity_name(merchant_match.group(1))
                 if not entity_name:
                     entity_name = "Traveling Merchant"
-            logging.info(f"🎯 Snipe detected! Parsed Merchant: {entity_name}")
             
         roblox_link = extract_roblox_link(text_to_search)
         
+        # ------------------------------------------------------------
+        # CLEAN & DETAILED VISUAL TERMINAL DASHBOARD
+        # ------------------------------------------------------------
+        print("\n" + "═"*60)
+        print(f" 🎯 EXTRACTION LOG - {event_type}")
+        print("─"*60)
+        print(f" 🏰 Server Name : {guild_name}")
+        print(f" 📺 Channel     : #{getattr(message.channel, 'name', 'Unknown')} (ID: {message.channel.id})")
+        print(f" 👤 Author      : {message.author}")
+        print(f" ✨ Parsed Item : {entity_name}")
+        print(f" 🔗 Link Found  : {roblox_link if roblox_link else 'None'}")
+        print("─"*60)
+        
         if roblox_link:
-            logging.info(f"🔗 Server Link: {roblox_link}")
-            
             if supabase:
                 try:
                     data, count = supabase.table("servers").insert({
                         "server_link": roblox_link, 
                         "biome_name": entity_name
                     }).execute()
-                    logging.info("✅ Successfully pushed new server entry to Supabase backend!")
+                    print(" ✅ STATUS      : Successfully pushed to Supabase DB Backend!")
                 except Exception as db_err:
-                    logging.error(f"❌ Database insert failed: {db_err}")
+                    print(f" ❌ STATUS      : Supabase Database Write Failure: {db_err}")
+            else:
+                print(" ⚠️ STATUS      : Skipped DB save (Supabase client uninitialized)")
         else:
-            logging.warning("⚠️ Target matched, but no Roblox share link was found in the text data.")
+            print(" ⚠️ STATUS      : Aborted DB save due to missing Roblox server link.")
+        print("═"*60 + "\n")
+        
     else:
-        logging.info("❌ [DEBUG] Message dropped inside monitored channel; neither 'Biome Started' nor Merchant keywords were found.")
+        # Structured fine-grained trace logs for messages that dropped without matched triggers
+        logging.info(f"📥 [FILTERED] Msg from '{message.author}' in #{getattr(message.channel, 'name', 'Unknown')} dropped (No keyword matches found).")
 
     await bot.process_commands(message)
 
