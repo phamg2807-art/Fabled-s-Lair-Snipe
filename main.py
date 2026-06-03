@@ -23,11 +23,43 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# Path to preserve counting data across restarts
+DATA_STORE_PATH = "metrics_store.json"
+
 # 3. Advanced Global Metric Trackers
 biome_counts = {}
 merchant_counts = {}
 webhook_activity = {}  # channel_id -> { "name": str, "last_seen": ISO string, "total_messages": int }
 active_live_events = {} # channel_id -> { "type": str, "name": str, "started_at": ISO string, "server": str }
+
+def load_persisted_metrics():
+    """Loads previous version counting data safely from the JSON file system."""
+    global biome_counts, merchant_counts, webhook_activity
+    if os.path.exists(DATA_STORE_PATH):
+        try:
+            with open(DATA_STORE_PATH, 'r', encoding='utf-8') as f:
+                stored_data = json.load(f)
+                biome_counts = stored_data.get("biomes", {})
+                merchant_counts = stored_data.get("merchants", {})
+                webhook_activity = stored_data.get("webhook_activity", {})
+                logging.info(f"💾 DATA ENGINE: Successfully restored historical metrics from {DATA_STORE_PATH}")
+        except Exception as e:
+            logging.error(f"⚠️ DATA ENGINE: Encountered error loading persisted state: {e}")
+    else:
+        logging.info("💾 DATA ENGINE: No previous metrics store file detected. Starting fresh counters.")
+
+def save_persisted_metrics():
+    """Saves current state counters to ensure future versions retain previous history data."""
+    try:
+        payload = {
+            "biomes": biome_counts,
+            "merchants": merchant_counts,
+            "webhook_activity": webhook_activity
+        }
+        with open(DATA_STORE_PATH, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logging.error(f"⚠️ DATA ENGINE: Failed writing tracking data payload to disk: {e}")
 
 def get_metrics_payload():
     """Generates a deep, accurate state object perfectly optimized for JSON API responses."""
@@ -236,6 +268,9 @@ def keep_alive():
 
 @bot.event
 async def on_ready():
+    # Load previously tracked metrics right upon boot before checking channels
+    load_persisted_metrics()
+    
     logging.info("SYSTEM ONLINE: logged into Discord Gateway successfully.")
     logging.info("--- START OF VISIBLE CHANNELS CHECKLIST ---")
     
@@ -304,10 +339,11 @@ async def on_message(message):
             if field.value: text_elements.append(field.value)
             
         combined_text = " ".join(text_elements)
+        combined_text_lower = combined_text.lower()
 
-        # Advanced keyword mapping to encompass varying macro frameworks smoothly
-        is_start = bool(re.search(r"\b(started|start|spawned|arrived|appeared)\b", combined_text, re.IGNORECASE))
-        is_end = bool(re.search(r"\b(ended|end|despawned|left|gone)\b", combined_text, re.IGNORECASE))
+        # Advanced keyword mapping to encompass merchant frameworks smoothly
+        is_start = bool(re.search(r"\b(started|start|spawned|arrived|appeared|has arrived|is here)\b", combined_text_lower))
+        is_end = bool(re.search(r"\b(ended|end|despawned|left|gone|has left)\b", combined_text_lower))
 
         if not is_start and not is_end:
             logging.info(f"[DEBUG] Message from '{message.author}' in #{message.channel.name} dropped: No valid active event keywords found.")
@@ -321,12 +357,25 @@ async def on_message(message):
 
         guild_name = message.guild.name if message.guild else "Private Guild"
 
-        # GATING INTERCEPT ROUTE: Is it a Merchant instance or Biome weather shift?
-        if "merchant" in combined_text.lower():
-            if "mysterious" in combined_text.lower():
+        # DEEP INTERCEPT FILTER: Detect if it is a Merchant arrival/departure (even without 'merchant' explicitly written)
+        is_merchant_event = (
+            "merchant" in combined_text_lower or 
+            "mari" in combined_text_lower or 
+            "jester" in combined_text_lower or 
+            "rin" in combined_text_lower
+        )
+
+        if is_merchant_event:
+            if "mysterious" in combined_text_lower:
                 merchant_name = "MYSTERIOUS MERCHANT"
-            elif "traveling" in combined_text.lower():
+            elif "traveling" in combined_text_lower:
                 merchant_name = "TRAVELING MERCHANT"
+            elif "mari" in combined_text_lower:
+                merchant_name = "MARI (MERCHANT)"
+            elif "jester" in combined_text_lower:
+                merchant_name = "JESTER (MERCHANT)"
+            elif "rin" in combined_text_lower:
+                merchant_name = "RIN (MERCHANT)"
             else:
                 merchant_name = "MERCHANT"
 
@@ -345,6 +394,8 @@ async def on_message(message):
             else:
                 active_live_events.pop(cid_str, None)
 
+            # Persist data state immediately after counting updates
+            save_persisted_metrics()
             metrics = get_metrics_payload()
 
             print("—" * 60)
@@ -365,9 +416,9 @@ async def on_message(message):
             if biome_match:
                 biome_name = biome_match.group(1).upper()
             else:
-                # Isolate sub-biomes safely when multiple priority tags overlap (e.g. Singularity inside Starfall)
+                # Isolate sub-biomes safely when multiple priority tags overlap
                 known_biomes = ["SINGULARITY", "GLITCHED", "DREAMSPACE", "CYBERSPACE", "STARFALL", "CORRUPTION", "WINDY", "SNOWY", "RAINY", "HELL", "NORMAL"]
-                found_known = [b for b in known_biomes if b.lower() in combined_text.lower()]
+                found_known = [b for b in known_biomes if b.lower() in combined_text_lower]
                 if found_known:
                     if "SINGULARITY" in found_known:
                         biome_name = "SINGULARITY"
@@ -393,6 +444,8 @@ async def on_message(message):
             else:
                 active_live_events.pop(cid_str, None)
 
+            # Persist data state immediately after counting updates
+            save_persisted_metrics()
             metrics = get_metrics_payload()
 
             print("—" * 60)
