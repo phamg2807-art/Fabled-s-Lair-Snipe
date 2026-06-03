@@ -244,9 +244,8 @@ async def on_ready():
         for channel in guild.text_channels:
             c_name_lower = channel.name.lower()
             
-            if "forward" in c_name_lower or "found" in c_name_lower:
-                tag = "[ . ] Text Context"
-            elif "webhook" in c_name_lower:
+            # Expanded target visibility visualization checklist
+            if "webhook" in c_name_lower or "forward" in c_name_lower or "found" in c_name_lower:
                 tag = "[🔥 TARGET MATCH]"
             else:
                 tag = "[ . ] Text Context"
@@ -263,12 +262,18 @@ async def on_message(message):
 
     channel_name = message.channel.name.lower()
     
-    # FILTER: Instantly ignore any forward or found channel rooms
-    if "forward" in channel_name or "found" in channel_name:
-        return
+    # Explicit Whitelist containing your requested missing channel IDs
+    missing_channel_whitelist = {1511359721632694363, 1511365304624877568, 1511335720239759361, 1511362877322432792}
 
-    # Target webhook designated monitoring logs
-    if "webhook" not in channel_name:
+    # High-precision verification check to accept webhooks, forwarders, found feeds, or explicitly whitelisted channels
+    is_monitored_channel = (
+        message.channel.id in missing_channel_whitelist or
+        "webhook" in channel_name or
+        "forward" in channel_name or
+        "found" in channel_name
+    )
+
+    if not is_monitored_channel:
         return
 
     cid_str = str(message.channel.id)
