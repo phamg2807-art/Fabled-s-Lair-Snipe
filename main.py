@@ -56,7 +56,6 @@ EVENT_SESSION_LIMITS = {
     "HELL": 666,
     "STARFALL": 650,
     "HEAVEN": 240,
-    "CORRUPTION": 650,
     "NULL": 99,
     # Rare Biomes
     "GLITCHED": 164,
@@ -227,11 +226,20 @@ def get_metrics_payload():
 
 # 4. Hybrid Web Server (Serves HTML Dashboard to Humans & Clean JSON to your Website Frontend)
 class RenderHealthCheckHandler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+
     def do_GET(self):
         if self.path == '/api/metrics':
             self.send_response(200)
             self.send_header('Content-type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*') 
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
             self.end_headers()
             payload = get_metrics_payload()
             self.wfile.write(json.dumps(payload, ensure_ascii=False, indent=2).encode('utf-8'))
@@ -562,10 +570,10 @@ async def on_message(message):
             # --- HIGH-VISIBILITY COMPACT LOG FLOW ---
             status_icon = "🟢" if is_start else "🔴"
             print(f"📡 [MERCHANT] {event_type} {status_icon} | {merchant_name} | Context: {account_identity}")
-            print(f"   ↳ Channel: #{message.channel.name} ({guild_name})")
-            if roblox_link: print(f"   ↳ Link: {roblox_link} ({link_detection_vector})")
-            print(f"   ↳ Max Accounts Safe Capacity: {macro_capacity} accounts (40s macro rate + 15s buffer)")
-            print(f"   ↳ Duration: {duration_str} | Delay: {execution_delay_ms:.2f}ms | Matrix Activity: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
+            print(f"    ↳ Channel: #{message.channel.name} ({guild_name})")
+            if roblox_link: print(f"    ↳ Link: {roblox_link} ({link_detection_vector})")
+            print(f"    ↳ Max Accounts Safe Capacity: {macro_capacity} accounts (40s macro rate + 15s buffer)")
+            print(f"    ↳ Duration: {duration_str} | Delay: {execution_delay_ms:.2f}ms | Matrix Activity: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
             print("─" * 80)
 
         else:
@@ -643,10 +651,10 @@ async def on_message(message):
             # --- HIGH-VISIBILITY COMPACT LOG FLOW ---
             status_icon = "🟢" if is_start else "🔴"
             print(f"🔮 [BIOME] {event_type} {status_icon} | {biome_name} | Context: {account_identity}")
-            print(f"   ↳ Channel: #{message.channel.name} ({guild_name})")
-            if roblox_link: print(f"   ↳ Link: {roblox_link} ({link_detection_vector})")
-            print(f"   ↳ Max Accounts Safe Capacity: {macro_capacity} accounts (40s macro rate + 15s buffer)")
-            print(f"   ↳ Duration: {duration_str} | Delay: {execution_delay_ms:.2f}ms | Matrix Activity: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
+            print(f"    ↳ Channel: #{message.channel.name} ({guild_name})")
+            if roblox_link: print(f"    ↳ Link: {roblox_link} ({link_detection_vector})")
+            print(f"    ↳ Max Accounts Safe Capacity: {macro_capacity} accounts (40s macro rate + 15s buffer)")
+            print(f"    ↳ Duration: {duration_str} | Delay: {execution_delay_ms:.2f}ms | Matrix Activity: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
             print("─" * 80)
 
 # Fire up the HTTP keep-alive daemon thread before triggering the Discord loop
