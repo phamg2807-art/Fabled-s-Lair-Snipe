@@ -45,12 +45,6 @@ merchant_counts  = {}
 webhook_activity = {}   # channel_id 
 active_live_events = {} # event_key  -> { type, name, started_at, server, … }
 
-# FIXED: Global variables for save/backup throttling
-_last_save_time   = 0.0
-_last_backup_time = 0.0
-SAVE_INTERVAL_S   = 15
-BACKUP_INTERVAL_S = 60
-
 # ============================================================
 #  4b. MERCHANT DEPARTURE WARNING CONFIG
 # ============================================================
@@ -67,7 +61,7 @@ EVENT_START_RE = re.compile(r"\b(started|start|spawned|arrived|appeared|has arri
 EVENT_END_RE   = re.compile(r"\b(ended|end|despawned|left|gone|has left|disappeared|expired|timed out)\b", re.IGNORECASE)
 
 KNOWN_BIOMES   = ["SINGULARITY","GLITCHED","DREAMSPACE","CYBERSPACE","STARFALL",
-                  "CORRUPTION","WINDY","SNOWY","RAINY","HELL","NORMAL","SAND"]
+                  "CORRUPTION","WINDY","SNOWY","RAINY","HELL","NORMAL","SAND", "UNKNOWN"]
 CLEAN_WORDS_RE = re.compile(r"\b[A-Z]{4,}\b")
 
 # ============================================================
@@ -86,6 +80,7 @@ EVENT_SESSION_LIMITS = {
     "DREAMSPACE":   192,
     "CYBERSPACE":   720,
     "SINGULARITY": 1200,
+    "NORMAL":       60,
     "MARI (MERCHANT)":       180,
     "JESTER (MERCHANT)":     180,
     "RIN (MERCHANT)":        180,
@@ -634,7 +629,6 @@ async def on_message(message):
                     biome_name = "SINGULARITY" if "SINGULARITY" in found_known else found_known[0]
                 else:
                     words          = CLEAN_WORDS_RE.findall(combined_text)
-                    # FIXED: Added "WARNING" to exclusion list
                     filtered_words = [w for w in words if w not in {
                         "START","STARTED","ENDED","BIOME","TIME","INVITE","SERVER","PRIVATE","LINK", "WARNING"
                     }]
@@ -642,6 +636,8 @@ async def on_message(message):
 
             if biome_name == "SAND":
                 biome_name = "SAND STORM"
+            if biome_name == "UNKNOWN BIOME" or biome_name == "UNKNOWN":
+                biome_name = "NORMAL"
 
             event_type   = "STARTED" if is_start else "ENDED"
             event_key    = f"{cid_str}_{account_identity}_{biome_name}"
