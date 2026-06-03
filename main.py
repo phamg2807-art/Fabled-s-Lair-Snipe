@@ -10,166 +10,663 @@ import asyncio
 import time
 from datetime import datetime, timezone
 
-# --- CONFIGURATION ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S %p')
+# 1. Setup real-time unbuffered logging format
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%H:%M:%S %p'
+)
+
+# 2. Configure Gateway Intents
 intents = discord.Intents.default()
 intents.messages = True
 intents.guilds = True
 intents.message_content = True 
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Path to preserve counting data locally (Secondary fallback layer)
 DATA_STORE_PATH = "metrics_store.json"
+
+# Auto-detect configuration for new containers (Guilds or Categories)
 AUTO_DETECT_CONTAINERS = {1501595856493740162, 1511360799996907710, 1509915924663238776}
-manually_added_channels = set()
-active_live_events = {}
-webhook_activity = {}
+dynamic_detected_channels = set()
+
+# 3. Advanced Global Metric Trackers
 biome_counts = {}
 merchant_counts = {}
-metrics_cache = {}
+webhook_activity = {}  # channel_id -> { "name": str, "last_seen": ISO string, "total_messages": int, "accounts": dict }
+active_live_events = {} # event_key -> { "type": str, "name": str, "started_at": ISO string, "server": str, ... }
 
-# --- REGEX & LIMITS ---
-ROBLOX_LINK_RE = re.compile(r"https://www\.roblox\.com/share\?\S+")
-EVENT_START_RE = re.compile(r"\b(started|start|spawned|arrived|appeared|has arrived|is here)\b", re.IGNORECASE)
-EVENT_END_RE = re.compile(r"\b(ended|end|despawned|left|gone|has left|disappeared|expired|timed out)\b", re.IGNORECASE)
+# --- PRE-COMPILED SPEED OPTIMIZATIONS (HOT PATH REGEX) ---
+ROBLOX_LINK_RE  = re.compile(r"https://www\.roblox\.com/share\?\S+")
+BIOME_MATCH_RE  = re.compile(r"(?:Biome\s+(?:Started|Ended)(?:\s*:\s*|\s*-\s*))([A-Z_]+)", re.IGNORECASE)
+EVENT_START_RE  = re.compile(r"\b(started|start|spawned|arrived|appeared|has arrived|is here)\b", re.IGNORECASE)
+# EXPANDED END REGEX: Added 'disappeared', 'expired', 'timed out'
+EVENT_END_RE    = re.compile(r"\b(ended|end|despawned|left|gone|has left|disappeared|expired|timed out)\b", re.IGNORECASE)
+KNOWN_BIOMES    = ["SINGULARITY", "GLITCHED", "DREAMSPACE", "CYBERSPACE", "STARFALL", "CORRUPTION", "WINDY", "SNOWY", "RAINY", "HELL", "NORMAL", "SAND"]
+CLEAN_WORDS_RE  = re.compile(r"\b[A-Z]{4,}\b")
 
+# --- SJP CONFIG: BIOME & MERCHANT SESSION TIME MAP (IN SECONDS) ---
 EVENT_SESSION_LIMITS = {
-    "WINDY": 120, "SNOWY": 120, "RAINY": 120, "SAND STORM": 650, "HELL": 666, 
-    "STARFALL": 650, "HEAVEN": 240, "NULL": 99, "GLITCHED": 164, "DREAMSPACE": 192, 
-    "CYBERSPACE": 720, "SINGULARITY": 1200, "MARI (MERCHANT)": 180, 
-    "JESTER (MERCHANT)": 180, "RIN (MERCHANT)": 180, "MYSTERIOUS MERCHANT": 180, 
-    "TRAVELING MERCHANT": 180, "MERCHANT": 180
+    # Standard Biomes
+    "WINDY": 120,
+    "SNOWY": 120,
+    "RAINY": 120,
+    "SAND STORM": 650,
+    "HELL": 666,
+    "STARFALL": 650,
+    "HEAVEN": 240,
+    "NULL": 99,
+    # Rare Biomes
+    "GLITCHED": 164,
+    "DREAMSPACE": 192,
+    "CYBERSPACE": 720,
+    "SINGULARITY": 1200,
+    # Merchants
+    "MARI (MERCHANT)": 180,
+    "JESTER (MERCHANT)": 180,
+    "RIN (MERCHANT)": 180,
+    "MYSTERIOUS MERCHANT": 180,
+    "TRAVELING MERCHANT": 180,
+    "MERCHANT": 180
 }
 
-# --- CORE ENGINE FUNCTIONS ---
+def calculate_macro_capacity(event_name, avg_action_time=40, buffer_time=15):
+    """Calculates theoretical max accounts a user can macro before session end."""
+    name_upper = event_name.upper()
+    if name_upper not in EVENT_SESSION_LIMITS:
+        return "Unknown"
+    
+    total_seconds = EVENT_SESSION_LIMITS[name_upper]
+    usable_seconds = total_seconds - buffer_time
+    
+    if usable_seconds <= 0:
+        return 0
+        
+    return usable_seconds // avg_action_time
 
-def update_metrics_cache():
-    """Pre-calculates data so the Dashboard remains lightning fast."""
-    global metrics_cache
-    now = datetime.now(timezone.utc)
-    metrics_cache = {
-        "status": "ONLINE",
-        "telemetry": {
-            "total_registered_webhooks": len(webhook_activity),
-            "grand_total_biomes": sum(biome_counts.values()),
-            "grand_total_merchants": sum(merchant_counts.values())
-        },
-        "live_events": list(active_live_events.values()),
-        "raw_webhook_registry": webhook_activity
-    }
-
-def cleanup_expired_sessions():
-    """Automatically removes events that have exceeded their hard-coded time limits."""
-    now = datetime.now(timezone.utc)
-    changed = False
-    for key, event in list(active_live_events.items()):
-        start_time = datetime.fromisoformat(event['started_at'])
-        limit = EVENT_SESSION_LIMITS.get(event['name'].upper(), 300) # Default 5m
-        if (now - start_time).total_seconds() > limit:
-            active_live_events.pop(key, None)
-            changed = True
-    if changed:
-        update_metrics_cache()
-
-def save_data():
-    data = {
-        "biomes": biome_counts,
-        "merchants": merchant_counts,
-        "webhook_activity": webhook_activity,
-        "manually_added_channels": list(manually_added_channels)
-    }
-    with open(DATA_STORE_PATH, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False)
-    update_metrics_cache()
-
-def load_data():
-    global biome_counts, merchant_counts, webhook_activity, manually_added_channels
+def load_persisted_metrics():
+    """Loads previous version counting data safely from the local file system (fallback)."""
+    global biome_counts, merchant_counts, webhook_activity
     if os.path.exists(DATA_STORE_PATH):
         try:
             with open(DATA_STORE_PATH, 'r', encoding='utf-8') as f:
-                d = json.load(f)
-                biome_counts = d.get("biomes", {})
-                merchant_counts = d.get("merchants", {})
-                webhook_activity = d.get("webhook_activity", {})
-                manually_added_channels = set(d.get("manually_added_channels", []))
-                update_metrics_cache()
-        except: pass
+                stored_data = json.load(f)
+                biome_counts = stored_data.get("biomes", {})
+                merchant_counts = stored_data.get("merchants", {})
+                webhook_activity = stored_data.get("webhook_activity", {})
+                logging.info(f"💾 LOCAL ENGINE: Restored metrics fallback cache from {DATA_STORE_PATH}")
+        except Exception as e:
+                logging.error(f"⚠️ LOCAL ENGINE: Error reading local cache state: {e}")
 
-# --- WEB SERVER ---
+def save_persisted_metrics():
+    """Saves current state counters to local file system payload."""
+    try:
+        payload = {
+            "biomes": biome_counts,
+            "merchants": merchant_counts,
+            "webhook_activity": webhook_activity
+        }
+        with open(DATA_STORE_PATH, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logging.error(f"⚠️ LOCAL ENGINE: Failed writing tracking data to disk: {e}")
 
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
+async def backup_state_to_discord_cloud():
+    """Bulletproof Cloud Engine: Saves the system state payload straight into a private Discord channel."""
+    state_channel_id = os.getenv("STATE_CHANNEL_ID")
+    channel = None
+    
+    if state_channel_id:
+        channel = bot.get_channel(int(state_channel_id))
+    if not channel:
+        for guild in bot.guilds:
+            channel = discord.utils.get(guild.text_channels, name="telemetry-state-db")
+            if channel:
+                break
+                
+    if channel:
+        try:
+            payload = {
+                "biomes": biome_counts,
+                "merchants": merchant_counts,
+                "webhook_activity": webhook_activity,
+                "active_live_events": active_live_events
+            }
+            temp_file = "cloud_backup.json"
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+            
+            await channel.send(
+                content=f"🔄 **Telemetry Cloud Backup Instance** | Timestamp: `{datetime.now(timezone.utc).isoformat()}`",
+                file=discord.File(temp_file)
+            )
+            logging.info("💾 CLOUD DATABASE: Successfully synced latest database state up to Discord storage channel.")
+            try:
+                os.remove(temp_file)
+            except:
+                pass
+        except Exception as e:
+            logging.error(f"⚠️ CLOUD DATABASE: Failed transmitting state synchronization: {e}")
+
+async def load_state_from_discord_cloud():
+    """Fetches the last JSON backup file posted inside the backup channel to recover historical states."""
+    global biome_counts, merchant_counts, webhook_activity, active_live_events
+    state_channel_id = os.getenv("STATE_CHANNEL_ID")
+    channel = None
+    
+    if state_channel_id:
+        channel = bot.get_channel(int(state_channel_id))
+    if not channel:
+        for guild in bot.guilds:
+            channel = discord.utils.get(guild.text_channels, name="telemetry-state-db")
+            if channel:
+                break
+                
+    if channel:
+        try:
+            logging.info("⚡ CLOUD DATABASE: Scanning sync channel histories for historical profiles...")
+            async for message in channel.history(limit=25):
+                if message.attachments:
+                    for attachment in message.attachments:
+                        if attachment.filename.endswith(".json"):
+                            data_bytes = await attachment.read()
+                            stored_data = json.loads(data_bytes.decode('utf-8'))
+                            
+                            biome_counts = stored_data.get("biomes", {})
+                            merchant_counts = stored_data.get("merchants", {})
+                            webhook_activity = stored_data.get("webhook_activity", {})
+                            active_live_events = stored_data.get("active_live_events", {})
+                            
+                            logging.info("🎯 CLOUD DATABASE: Successfully restored all cross-version historical data from Discord Cloud Storage!")
+                            return True
+        except Exception as e:
+            logging.error(f"⚠️ CLOUD DATABASE: Critical error while attempting recovery parse: {e}")
+    return False
+
+def get_metrics_payload():
+    """Generates a deep, accurate state object perfectly optimized for JSON API responses."""
+    now = datetime.now(timezone.utc)
+    total_webhooks = len(webhook_activity)
+    active_webhooks_count = 0
+    active_streams_list = []
+    
+    grand_total_biomes = sum(biome_counts.values())
+    grand_total_merchants = sum(merchant_counts.values())
+    
+    for cid, data in webhook_activity.items():
+        last_seen_dt = datetime.fromisoformat(data["last_seen"])
+        delta_mins = (now - last_seen_dt).total_seconds() / 60.0
+        if delta_mins <= 10.0:
+            active_webhooks_count += 1
+            active_streams_list.append({
+                "channel_id": cid,
+                "name": data["name"],
+                "last_seen_ago_mins": round(delta_mins, 2),
+                "accounts_count": len(data.get("accounts", {}))
+            })
+            
+    return {
+        "status": "ONLINE",
+        "timestamp": now.isoformat(),
+        "telemetry": {
+            "total_registered_webhooks": total_webhooks,
+            "active_webhooks_last_10m": active_webhooks_count,
+            "grand_total_biomes": grand_total_biomes,
+            "grand_total_merchants": grand_total_merchants
+        },
+        "counters": {
+            "biomes": biome_counts,
+            "merchants": merchant_counts
+        },
+        "live_events": list(active_live_events.values()),
+        "active_webhook_streams": active_streams_list,
+        "raw_webhook_registry": webhook_activity
+    }
+
+# 4. Hybrid Web Server (Serves HTML Dashboard to Humans & Clean JSON to your Website Frontend)
+class RenderHealthCheckHandler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header('Content-type', 'application/json')
         self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
-        self.wfile.write(json.dumps(metrics_cache).encode())
+
+    def do_GET(self):
+        if self.path == '/api/metrics':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+            self.end_headers()
+            payload = get_metrics_payload()
+            self.wfile.write(json.dumps(payload, ensure_ascii=False, indent=2).encode('utf-8'))
+            return
+            
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html; charset=utf-8')
+        self.end_headers()
+        
+        data = get_metrics_payload()
+        
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>Telemetry Hub - Multi-Account Dashboard</title>
+            <style>
+                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0b0c10; color: #c5c6c7; padding: 30px; margin: 0; }}
+                .container {{ max-width: 1200px; margin: 0 auto; }}
+                h1 {{ color: #66fcf1; border-bottom: 2px solid #1f2833; padding-bottom: 12px; margin-bottom: 25px; font-size: 28px; }}
+                h2 {{ color: #45f3ff; margin-top: 35px; margin-bottom: 15px; font-size: 20px; text-transform: uppercase; letter-spacing: 1px; }}
+                .card {{ background: #1f2833; padding: 20px; border-radius: 8px; margin-bottom: 25px; border: 1px solid #2f3e46; }}
+                .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; }}
+                .stat-card {{ background: #151a21; padding: 20px; border-radius: 6px; border-left: 4px solid #66fcf1; }}
+                .stat-val {{ font-size: 32px; font-weight: bold; color: #fff; margin-top: 5px; }}
+                .grid-display {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 15px; }}
+                .item-box {{ background: #151a21; padding: 15px; border-radius: 6px; text-align: center; border: 1px solid #45f3ff; }}
+                .item-title {{ font-weight: bold; color: #c5c6c7; font-size: 13px; text-transform: uppercase; }}
+                .item-count {{ font-size: 24px; color: #66fcf1; font-weight: bold; margin-top: 6px; }}
+                .live-box {{ background: #1c2541; border: 1px solid #5bc0be; padding: 15px; border-radius: 6px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }}
+                .badge {{ background: #ff2a6d; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; text-transform: uppercase; animation: pulse 2s infinite; }}
+                
+                .webhook-block {{ background: #151a21; border: 1px solid #2f3e46; border-radius: 6px; padding: 15px; margin-bottom: 15px; }}
+                .webhook-header {{ font-size: 16px; font-weight: bold; color: #66fcf1; border-bottom: 1px dashed #2f3e46; padding-bottom: 6px; margin-bottom: 10px; display: flex; justify-content: space-between; }}
+                .account-row {{ background: #1f2833; border-left: 3px solid #ff2a6d; padding: 10px; margin: 8px 0; border-radius: 4px; font-size: 13px; }}
+                .session-tag {{ background: #2f3e46; padding: 2px 6px; border-radius: 3px; font-size: 11px; color: #45f3ff; margin-right: 5px; }}
+                @keyframes pulse {{ 0% {{ opacity: 0.6; }} 50% {{ opacity: 1; }} 100% {{ opacity: 0.6; }} }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>⚡ Multi-Account Telemetry Hub</h1>
+                <p>System Status: <span style="color:#66fcf1; font-weight:bold;">ONLINE</span> | Cloud Sync: <span style="color:#2ecc71; font-weight:bold;">ACTIVE</span></p>
+                
+                <div class="stat-grid">
+                    <div class="stat-card" style="border-left-color: #a78bfa;">
+                        <div style="color: #95a5a6; font-size: 14px;">✨ Grand Total Biomes</div>
+                        <div class="stat-val" style="color: #a78bfa;">{data['telemetry']['grand_total_biomes']}</div>
+                    </div>
+                    <div class="stat-card" style="border-left-color: #f59e0b;">
+                        <div style="color: #95a5a6; font-size: 14px;">🛒 Grand Total Merchants</div>
+                        <div class="stat-val" style="color: #f59e0b;">{data['telemetry']['grand_total_merchants']}</div>
+                    </div>
+                    <div class="stat-card" style="border-left-color: #45f3ff;">
+                        <div style="color: #95a5a6; font-size: 14px;">Total Channels</div>
+                        <div class="stat-val">{data['telemetry']['total_registered_webhooks']}</div>
+                    </div>
+                    <div class="stat-card" style="border-left-color: #ff2a6d;">
+                        <div style="color: #95a5a6; font-size: 14px;">Active Webhooks (10m)</div>
+                        <div class="stat-val">{data['telemetry']['active_webhooks_last_10m']}</div>
+                    </div>
+                </div>
+                
+                <h2>🔴 Real-Time Active Sessions</h2>
+                <div class="card">
+        """
+        if not data['live_events']:
+            html += '<p class="empty">No active macro instances detected streaming right now.</p>'
+        else:
+            for ev in data['live_events']:
+                html += f"""
+                <div class="live-box">
+                    <div>
+                        <strong style="color:#fff; font-size:16px;">{ev['name']}</strong> 
+                        <span style="color:#95a5a6; margin-left:10px;">({ev['type'].upper()})</span>
+                        <br><small style="color:#45f3ff;">Channel: #{ev['channel_name']} | Assigned: <strong>{ev.get('account_identity', 'Unknown Account')}</strong></small>
+                    </div>
+                    <span class="badge">Live Since {ev['started_at'][11:19]} UTC</span>
+                </div>
+                """
+                
+        html += """
+                </div>
+                
+                <h2>📡 Channel Macro Profiles & Biome Lengths</h2>
+                <div class="card">
+        """
+        if not data['raw_webhook_registry']:
+            html += '<p class="empty">No channel stream history recorded yet.</p>'
+        else:
+            for cid, reg in sorted(data['raw_webhook_registry'].items(), key=lambda x: x[1]['name']):
+                html += f"""
+                <div class="webhook-block">
+                    <div class="webhook-header">
+                        <span>#{reg['name']} <small style="color:#7f8c8d; font-weight:normal;">({reg['total_messages']} frames)</small></span>
+                        <span style="color:#45f3ff; font-size:13px;">Accounts Detected: {len(reg.get('accounts', {}))}</span>
+                    </div>
+                """
+                accounts = reg.get("accounts", {})
+                if not accounts:
+                    html += '<p style="color:#4f5d75; font-style:italic; margin:0; font-size:13px;">No accounts assigned yet via private server links.</p>'
+                else:
+                    for l_key, acc in accounts.items():
+                        html += f"""
+                        <div class="account-row">
+                            <strong style="color:#fff;">{acc['display_name']}</strong> 
+                            <span style="color:#95a5a6; font-size:11px; margin-left:10px;">Link Hash: {l_key[:30]}...</span>
+                            <div style="margin-top:6px;">
+                                <span style="color:#66fcf1; font-weight:bold;">Recent Finished Sessions & Session Lengths:</span><br>
+                        """
+                        history = acc.get("completed_sessions", [])
+                        if not history:
+                            html += '<span style="color:#7f8c8d; font-size:12px;">Waiting for first session termination event...</span>'
+                        else:
+                            for sess in reversed(history):
+                                html += f"<span class='session-tag'>{sess['name']}: {sess['duration']}</span> "
+                        html += """
+                            </div>
+                        </div>
+                        """
+                html += "</div>"
+            
+        html += """
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        self.wfile.write(html.encode('utf-8'))
+        
+    def log_message(self, format, *args):
+        pass 
 
 def keep_alive():
-    server = HTTPServer(('0.0.0.0', int(os.getenv("PORT", 10000))), HealthHandler)
+    port = int(os.getenv("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), RenderHealthCheckHandler)
+    logging.info(f"WEB SERVER: Dashboard engine active on port {port}")
     server.serve_forever()
-
-# --- BOT LOGIC ---
-
-@bot.command()
-async def addchannel(ctx, channel: discord.TextChannel = None):
-    if not channel: return
-    manually_added_channels.add(channel.id)
-    save_data()
-    await ctx.send(f"✅ Tracking: #{channel.name}")
 
 @bot.event
 async def on_ready():
-    load_data()
-    logging.info("Bot Online & Tracking.")
+    load_persisted_metrics()
+    await load_state_from_discord_cloud()
+    
+    for guild in bot.guilds:
+        for channel in guild.text_channels:
+            if guild.id in AUTO_DETECT_CONTAINERS or (channel.category_id in AUTO_DETECT_CONTAINERS):
+                dynamic_detected_channels.add(channel.id)
+                
+    logging.info(f"📡 AUTO-DETECT: Initialized and cached {len(dynamic_detected_channels)} text channels from monitored containers.")
+    logging.info("SYSTEM ONLINE: Logged into Discord Gateway successfully.")
+    logging.info("Your service is live and tracking 🚀")
+
+@bot.event
+async def on_guild_channel_create(channel):
+    if isinstance(channel, discord.TextChannel):
+        if channel.guild.id in AUTO_DETECT_CONTAINERS or (channel.category_id in AUTO_DETECT_CONTAINERS):
+            dynamic_detected_channels.add(channel.id)
+            logging.info(f"📡 AUTO-DETECT: New target stream channel #{channel.name} ({channel.id}) spawned in monitored container! Added to dynamic filters.")
 
 @bot.event
 async def on_message(message):
-    if message.author == bot.user: return
-    await bot.process_commands(message)
+    if message.author == bot.user:
+        return
 
-    # 1. Filter Channels
-    is_monitored = message.channel.id in manually_added_channels or "webhook" in message.channel.name.lower()
-    if not is_monitored: return
+    start_processing_time = time.perf_counter()
+    channel_name = message.channel.name.lower()
+    missing_channel_whitelist = {1511359721632694363, 1511365304624877568, 1511335720239759361, 1511362877322432792}
 
-    # 2. Cleanup expired sessions before processing
-    cleanup_expired_sessions()
+    is_monitored_channel = (
+        message.channel.id in missing_channel_whitelist or
+        message.channel.id in dynamic_detected_channels or
+        "webhook" in channel_name
+    )
 
-    # 3. Parse Message
-    txt = (message.content or "") + " " + " ".join([e.title or "" for e in message.embeds])
-    txt_lower = txt.lower()
+    if not is_monitored_channel:
+        return
+
+    cid_str = str(message.channel.id)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    is_forwarder = False
+    link_detection_vector = "None"
+
+    combined_embed_text = message.content or ""
+    if message.embeds:
+        for embed in message.embeds:
+            els = [embed.title or "", embed.description or ""]
+            for f in embed.fields:
+                els.extend([f.name or "", f.value or ""])
+            combined_embed_text += " " + " ".join(els)
+            
+    if message.components:
+        for row in message.components:
+            for component in row.children:
+                if hasattr(component, 'url') and component.url:
+                    combined_embed_text += f" {component.url}"
+                    link_detection_vector = "Interaction Button Component Link"
+
+    link_match = ROBLOX_LINK_RE.search(combined_embed_text)
+    roblox_link = link_match.group(0) if link_match else None
     
-    # Identify Event
-    is_start = bool(EVENT_START_RE.search(txt_lower))
-    is_end = bool(EVENT_END_RE.search(txt_lower))
-    if not is_start and not is_end: return
+    if roblox_link and link_detection_vector == "None":
+        link_detection_vector = "Raw Message Text or Embed Block"
 
-    # Identify Name (Merchant or Biome)
-    found_name = None
-    for m in ["MARI", "JESTER", "RIN", "MYSTERIOUS", "TRAVELING", "MERCHANT"]:
-        if m.lower() in txt_lower: found_name = f"{m} (MERCHANT)"
-    if not found_name:
-        for b in EVENT_SESSION_LIMITS:
-            if b.lower() in txt_lower: found_name = b
+    if not is_forwarder:
+        if cid_str not in webhook_activity:
+            webhook_activity[cid_str] = {
+                "name": message.channel.name,
+                "last_seen": now_iso,
+                "total_messages": 1,
+                "accounts": {}
+            }
+        else:
+            webhook_activity[cid_str]["last_seen"] = now_iso
+            webhook_activity[cid_str]["total_messages"] += 1
+            if "accounts" not in webhook_activity[cid_str]:
+                webhook_activity[cid_str]["accounts"] = {}
 
-    if not found_name: return
+        if roblox_link:
+            acc_registry = webhook_activity[cid_str]["accounts"]
+            if roblox_link not in acc_registry:
+                assigned_index = len(acc_registry) + 1
+                acc_registry[roblox_link] = {
+                    "display_name": f"Account {assigned_index}",
+                    "biomes": {},
+                    "merchants": {},
+                    "completed_sessions": []
+                }
+            account_identity = acc_registry[roblox_link]["display_name"]
+        else:
+            account_identity = "Account 1" 
+    else:
+        account_identity = "Forwarder Source"
 
-    # 4. State Management
-    key = f"{message.channel.id}_{found_name}"
-    
-    if is_start:
-        active_live_events[key] = {
-            "name": found_name,
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "channel_name": message.channel.name
-        }
-        if "MERCHANT" in found_name: merchant_counts[found_name] = merchant_counts.get(found_name, 0) + 1
-        else: biome_counts[found_name] = biome_counts.get(found_name, 0) + 1
+    if not message.embeds:
+        return
+
+    for embed in message.embeds:
+        text_elements = []
+        if embed.title: text_elements.append(embed.title)
+        if embed.description: text_elements.append(embed.description)
+        if embed.author and embed.author.name: text_elements.append(embed.author.name)
         
-    elif is_end:
-        active_live_events.pop(key, None)
+        for field in embed.fields:
+            if field.name: text_elements.append(field.name)
+            if field.value: text_elements.append(field.value)
+            
+        combined_text = " ".join(text_elements)
+        combined_text_lower = combined_text.lower()
 
-    save_data()
+        is_start = bool(EVENT_START_RE.search(combined_text_lower))
+        is_end = bool(EVENT_END_RE.search(combined_text_lower))
+        
+        # DEBUG PRINT: Helpful to see if the end regex is catching the message
+        if is_end:
+            print(f"DEBUG: Triggered END logic for: {combined_text_lower[:50]}")
 
-# Run
+        if not is_start and not is_end:
+            continue
+
+        guild_name = message.guild.name if message.guild else "Private Guild"
+
+        is_merchant_event = (
+            "merchant" in combined_text_lower or 
+            "mari" in combined_text_lower or 
+            "jester" in combined_text_lower or 
+            "rin" in combined_text_lower
+        )
+
+        if is_merchant_event:
+            if "mysterious" in combined_text_lower: merchant_name = "MYSTERIOUS MERCHANT"
+            elif "traveling" in combined_text_lower: merchant_name = "TRAVELING MERCHANT"
+            elif "mari" in combined_text_lower: merchant_name = "MARI (MERCHANT)"
+            elif "jester" in combined_text_lower: merchant_name = "JESTER (MERCHANT)"
+            elif "rin" in combined_text_lower: merchant_name = "RIN (MERCHANT)"
+            else: merchant_name = "MERCHANT"
+
+            event_type = "SPAWNED" if is_start else "DESPAWNED"
+            event_key = f"{cid_str}_{account_identity}_{merchant_name}"
+            duration_str = "N/A"
+            found_start_event = None
+            target_key = event_key
+
+            # --- SMART TRACKING FALLBACK ENGINE ---
+            if event_key in active_live_events:
+                found_start_event = active_live_events[event_key]
+            else:
+                for k, ev in list(active_live_events.items()):
+                    if k.startswith(f"{cid_str}_") and ev["name"] == merchant_name:
+                        target_key = k
+                        found_start_event = ev
+                        account_identity = ev["account_identity"]
+                        if ev["link"] != "None":
+                            roblox_link = ev["link"]
+                            link_detection_vector = "Smart Historical Profile Match"
+                        break
+
+            if is_start:
+                merchant_counts[merchant_name] = merchant_counts.get(merchant_name, 0) + 1
+                active_live_events[event_key] = {
+                    "type": "merchant",
+                    "name": merchant_name,
+                    "started_at": now_iso,
+                    "server": guild_name,
+                    "channel_name": message.channel.name,
+                    "account_identity": account_identity,
+                    "link": roblox_link or "None"
+                }
+            else:
+                if found_start_event:
+                    start_dt = datetime.fromisoformat(found_start_event["started_at"])
+                    delta = datetime.now(timezone.utc) - start_dt
+                    duration_str = f"{int(delta.total_seconds() // 60)}m {int(delta.total_seconds() % 60)}s"
+                    active_live_events.pop(target_key, None)
+                    
+                    if not is_forwarder and roblox_link and roblox_link in webhook_activity[cid_str]["accounts"]:
+                        webhook_activity[cid_str]["accounts"][roblox_link]["completed_sessions"].append({
+                            "name": merchant_name, "duration": duration_str, "at": now_iso
+                        })
+                else:
+                    duration_str = "N/A (Start missed)"
+
+            await asyncio.to_thread(save_persisted_metrics)
+            await backup_state_to_discord_cloud()
+            metrics = get_metrics_payload()
+            execution_delay_ms = (time.perf_counter() - start_processing_time) * 1000
+            
+            # Recalculate macro user safety limits based on 40s cycles
+            macro_capacity = calculate_macro_capacity(merchant_name)
+
+            # --- HIGH-VISIBILITY COMPACT LOG FLOW ---
+            status_icon = "🟢" if is_start else "🔴"
+            print(f"📡 [MERCHANT] {event_type} {status_icon} | {merchant_name} | Context: {account_identity}")
+            print(f"    ↳ Channel: #{message.channel.name} ({guild_name})")
+            if roblox_link: print(f"    ↳ Link: {roblox_link} ({link_detection_vector})")
+            print(f"    ↳ Max Accounts Safe Capacity: {macro_capacity} accounts (40s macro rate + 15s buffer)")
+            print(f"    ↳ Duration: {duration_str} | Delay: {execution_delay_ms:.2f}ms | Matrix Activity: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
+            print("─" * 80)
+
+        else:
+            biome_match = BIOME_MATCH_RE.search(combined_text)
+            if biome_match:
+                biome_name = biome_match.group(1).upper()
+            else:
+                found_known = [b for b in KNOWN_BIOMES if b.lower() in combined_text_lower]
+                if found_known:
+                    biome_name = "SINGULARITY" if "SINGULARITY" in found_known else found_known[0]
+                else:
+                    words = CLEAN_WORDS_RE.findall(combined_text)
+                    filtered_words = [w for w in words if w not in ["START", "STARTED", "ENDED", "BIOME", "TIME", "INVITE", "SERVER", "PRIVATE", "LINK"]]
+                    biome_name = filtered_words[0] if filtered_words else "UNKNOWN BIOME"
+
+            # Normalize names that come through with variations (e.g. SANDSTORM vs SAND STORM)
+            if biome_name == "SAND":
+                biome_name = "SAND STORM"
+
+            event_type = "STARTED" if is_start else "ENDED"
+            event_key = f"{cid_str}_{account_identity}_{biome_name}"
+            duration_str = "N/A"
+            found_start_event = None
+            target_key = event_key
+
+            # --- SMART TRACKING FALLBACK ENGINE ---
+            if event_key in active_live_events:
+                found_start_event = active_live_events[event_key]
+            else:
+                for k, ev in list(active_live_events.items()):
+                    if k.startswith(f"{cid_str}_") and ev["name"] == biome_name:
+                        target_key = k
+                        found_start_event = ev
+                        account_identity = ev["account_identity"]
+                        if ev["link"] != "None":
+                            roblox_link = ev["link"]
+                            link_detection_vector = "Smart Historical Profile Match"
+                        break
+
+            if is_start:
+                biome_counts[biome_name] = biome_counts.get(biome_name, 0) + 1
+                active_live_events[event_key] = {
+                    "type": "biome",
+                    "name": biome_name,
+                    "started_at": now_iso,
+                    "server": guild_name,
+                    "channel_name": message.channel.name,
+                    "account_identity": account_identity,
+                    "link": roblox_link or "None"
+                }
+            else:
+                if found_start_event:
+                    start_dt = datetime.fromisoformat(found_start_event["started_at"])
+                    delta = datetime.now(timezone.utc) - start_dt
+                    duration_str = f"{int(delta.total_seconds() // 60)}m {int(delta.total_seconds() % 60)}s"
+                    active_live_events.pop(target_key, None)
+                    
+                    if not is_forwarder and roblox_link and roblox_link in webhook_activity[cid_str]["accounts"]:
+                        if len(webhook_activity[cid_str]["accounts"][roblox_link]["completed_sessions"]) >= 10:
+                            webhook_activity[cid_str]["accounts"][roblox_link]["completed_sessions"].pop(0)
+                        webhook_activity[cid_str]["accounts"][roblox_link]["completed_sessions"].append({
+                            "name": biome_name, "duration": duration_str, "at": now_iso
+                        })
+                else:
+                    duration_str = "N/A (Start missed)"
+
+            await asyncio.to_thread(save_persisted_metrics)
+            await backup_state_to_discord_cloud()
+            metrics = get_metrics_payload()
+            execution_delay_ms = (time.perf_counter() - start_processing_time) * 1000
+            
+            # Recalculate macro user safety limits based on 40s cycles
+            macro_capacity = calculate_macro_capacity(biome_name)
+
+            # --- HIGH-VISIBILITY COMPACT LOG FLOW ---
+            status_icon = "🟢" if is_start else "🔴"
+            print(f"🔮 [BIOME] {event_type} {status_icon} | {biome_name} | Context: {account_identity}")
+            print(f"    ↳ Channel: #{message.channel.name} ({guild_name})")
+            if roblox_link: print(f"    ↳ Link: {roblox_link} ({link_detection_vector})")
+            print(f"    ↳ Max Accounts Safe Capacity: {macro_capacity} accounts (40s macro rate + 15s buffer)")
+            print(f"    ↳ Duration: {duration_str} | Delay: {execution_delay_ms:.2f}ms | Matrix Activity: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
+            print("─" * 80)
+
+# Fire up the HTTP keep-alive daemon thread before triggering the Discord loop
 threading.Thread(target=keep_alive, daemon=True).start()
-bot.run(os.getenv("DISCORD_TOKEN"))
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+if TOKEN:
+    bot.run(TOKEN)
+else:
+    print("Error: DISCORD_TOKEN environment variable not set.")
