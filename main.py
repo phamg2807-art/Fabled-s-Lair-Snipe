@@ -126,13 +126,22 @@ async def on_message(message):
     is_merchant = any(k in text_to_search for k in ["Merchant", "Mari", "Jester"])
 
     if is_biome or is_merchant:
-        entity_name = "Unknown"
+        # Print out the raw text for easy validation if a pattern shifts
+        logging.info(f"📝 [PARSER TRACE] Raw text blob to clean:\n{text_to_search.strip()}\n---")
+        entity_name = ""
         
         if is_biome:
-            biome_match = re.search(r'(?:Biome Started[:\-]\s*)([A-Z_a-z0-9\s]+)', text_to_search)
-            entity_name = biome_match.group(1).strip() if biome_match else "Unknown Biome"
-            if "\n" in entity_name:
-                entity_name = entity_name.split("\n")[0].strip()
+            # Captures everything remaining on the line following 'Biome Started'
+            biome_match = re.search(r'Biome\s*Started[\s\*\:\-]*([^\n]+)', text_to_search, re.IGNORECASE)
+            if biome_match:
+                raw_name = biome_match.group(1).strip()
+                # Strip clean of common markdown markers
+                raw_name = raw_name.replace("**", "").replace("*", "").replace("__", "").strip()
+                # Drop leading symbols/emojis to leave the pure text name
+                entity_name = re.sub(r'^[^A-Za-z0-9\s]+', '', raw_name).strip()
+            
+            if not entity_name:
+                entity_name = "Unknown Biome"
             logging.info(f"🎯 Snipe detected! Parsed Biome: {entity_name}")
             
         else:
@@ -142,10 +151,14 @@ async def on_message(message):
             elif "Jester" in text_to_search:
                 entity_name = "Merchant (Jester)"
             else:
-                merchant_match = re.search(r'(?:Merchant(?:\s+Spawned|\s+Arrived|\s+Arrived!)?[:\-]\s*)([A-Z_a-z0-9\s]+)', text_to_search, re.IGNORECASE)
-                entity_name = merchant_match.group(1).strip() if merchant_match else "Traveling Merchant"
-                if "\n" in entity_name:
-                    entity_name = entity_name.split("\n")[0].strip()
+                merchant_match = re.search(r'Merchant(?:s)?(?:[\s\w]+)?[\s\*\:\-]*([^\n]+)', text_to_search, re.IGNORECASE)
+                if merchant_match:
+                    raw_name = merchant_match.group(1).strip()
+                    raw_name = raw_name.replace("**", "").replace("*", "").strip()
+                    entity_name = re.sub(r'^[^A-Za-z0-9\s]+', '', raw_name).strip()
+                
+                if not entity_name:
+                    entity_name = "Traveling Merchant"
             logging.info(f"🎯 Snipe detected! Parsed Merchant: {entity_name}")
             
         roblox_link = extract_roblox_link(text_to_search)
@@ -155,7 +168,6 @@ async def on_message(message):
             
             if supabase:
                 try:
-                    # Inserts the extracted biome or merchant name directly into your biome_name column
                     data, count = supabase.table("servers").insert({
                         "server_link": roblox_link, 
                         "biome_name": entity_name
