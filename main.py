@@ -46,6 +46,46 @@ EVENT_END_RE    = re.compile(r"\b(ended|end|despawned|left|gone|has left)\b", re
 KNOWN_BIOMES    = ["SINGULARITY", "GLITCHED", "DREAMSPACE", "CYBERSPACE", "STARFALL", "CORRUPTION", "WINDY", "SNOWY", "RAINY", "HELL", "NORMAL", "SAND"]
 CLEAN_WORDS_RE  = re.compile(r"\b[A-Z]{4,}\b")
 
+# --- SJP CONFIG: BIOME & MERCHANT SESSION TIME MAP (IN SECONDS) ---
+EVENT_SESSION_LIMITS = {
+    # Standard Biomes
+    "WINDY": 120,
+    "SNOWY": 120,
+    "RAINY": 120,
+    "SAND STORM": 650,
+    "HELL": 666,
+    "STARFALL": 650,
+    "HEAVEN": 240,
+    "CORRUPTION": 650,
+    "NULL": 99,
+    # Rare Biomes
+    "GLITCHED": 164,
+    "DREAMSPACE": 192,
+    "CYBERSPACE": 720,
+    "SINGULARITY": 1200,
+    # Merchants
+    "MARI (MERCHANT)": 180,
+    "JESTER (MERCHANT)": 180,
+    "RIN (MERCHANT)": 180,
+    "MYSTERIOUS MERCHANT": 180,
+    "TRAVELING MERCHANT": 180,
+    "MERCHANT": 180
+}
+
+def calculate_macro_capacity(event_name, avg_action_time=40, buffer_time=15):
+    """Calculates theoretical max accounts a user can macro before session end."""
+    name_upper = event_name.upper()
+    if name_upper not in EVENT_SESSION_LIMITS:
+        return "Unknown"
+    
+    total_seconds = EVENT_SESSION_LIMITS[name_upper]
+    usable_seconds = total_seconds - buffer_time
+    
+    if usable_seconds <= 0:
+        return 0
+        
+    return usable_seconds // avg_action_time
+
 def load_persisted_metrics():
     """Loads previous version counting data safely from the local file system (fallback)."""
     global biome_counts, merchant_counts, webhook_activity
@@ -515,12 +555,16 @@ async def on_message(message):
             await backup_state_to_discord_cloud()
             metrics = get_metrics_payload()
             execution_delay_ms = (time.perf_counter() - start_processing_time) * 1000
+            
+            # Recalculate macro user safety limits based on 40s cycles
+            macro_capacity = calculate_macro_capacity(merchant_name)
 
             # --- HIGH-VISIBILITY COMPACT LOG FLOW ---
             status_icon = "🟢" if is_start else "🔴"
             print(f"📡 [MERCHANT] {event_type} {status_icon} | {merchant_name} | Context: {account_identity}")
             print(f"   ↳ Channel: #{message.channel.name} ({guild_name})")
             if roblox_link: print(f"   ↳ Link: {roblox_link} ({link_detection_vector})")
+            print(f"   ↳ Max Accounts Safe Capacity: {macro_capacity} accounts (40s macro rate + 15s buffer)")
             print(f"   ↳ Duration: {duration_str} | Delay: {execution_delay_ms:.2f}ms | Matrix Activity: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
             print("─" * 80)
 
@@ -536,6 +580,10 @@ async def on_message(message):
                     words = CLEAN_WORDS_RE.findall(combined_text)
                     filtered_words = [w for w in words if w not in ["START", "STARTED", "ENDED", "BIOME", "TIME", "INVITE", "SERVER", "PRIVATE", "LINK"]]
                     biome_name = filtered_words[0] if filtered_words else "UNKNOWN BIOME"
+
+            # Normalize names that come through with variations (e.g. SANDSTORM vs SAND STORM)
+            if biome_name == "SAND":
+                biome_name = "SAND STORM"
 
             event_type = "STARTED" if is_start else "ENDED"
             event_key = f"{cid_str}_{account_identity}_{biome_name}"
@@ -588,12 +636,16 @@ async def on_message(message):
             await backup_state_to_discord_cloud()
             metrics = get_metrics_payload()
             execution_delay_ms = (time.perf_counter() - start_processing_time) * 1000
+            
+            # Recalculate macro user safety limits based on 40s cycles
+            macro_capacity = calculate_macro_capacity(biome_name)
 
             # --- HIGH-VISIBILITY COMPACT LOG FLOW ---
             status_icon = "🟢" if is_start else "🔴"
             print(f"🔮 [BIOME] {event_type} {status_icon} | {biome_name} | Context: {account_identity}")
             print(f"   ↳ Channel: #{message.channel.name} ({guild_name})")
             if roblox_link: print(f"   ↳ Link: {roblox_link} ({link_detection_vector})")
+            print(f"   ↳ Max Accounts Safe Capacity: {macro_capacity} accounts (40s macro rate + 15s buffer)")
             print(f"   ↳ Duration: {duration_str} | Delay: {execution_delay_ms:.2f}ms | Matrix Activity: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
             print("─" * 80)
 
