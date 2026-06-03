@@ -45,6 +45,12 @@ merchant_counts  = {}
 webhook_activity = {}   # channel_id 
 active_live_events = {} # event_key  -> { type, name, started_at, server, … }
 
+# FIXED: Global variables for save/backup throttling
+_last_save_time   = 0.0
+_last_backup_time = 0.0
+SAVE_INTERVAL_S   = 15
+BACKUP_INTERVAL_S = 60
+
 # ============================================================
 #  4b. MERCHANT DEPARTURE WARNING CONFIG
 # ============================================================
@@ -628,6 +634,7 @@ async def on_message(message):
                     biome_name = "SINGULARITY" if "SINGULARITY" in found_known else found_known[0]
                 else:
                     words          = CLEAN_WORDS_RE.findall(combined_text)
+                    # FIXED: Added "WARNING" to exclusion list
                     filtered_words = [w for w in words if w not in {
                         "START","STARTED","ENDED","BIOME","TIME","INVITE","SERVER","PRIVATE","LINK", "WARNING"
                     }]
