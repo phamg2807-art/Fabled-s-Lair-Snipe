@@ -1,6 +1,5 @@
 import os
 import re
-import asyncio
 from flask import Flask
 from threading import Thread
 import discord
@@ -27,7 +26,7 @@ def run_server():
 # ==========================================
 intents = discord.Intents.default()
 intents.message_content = True  # Crucial for reading message data
-bot = commands.Bot(command_code="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Fetch channel IDs from environment variable
 raw_channels = os.getenv("CHANNEL_IDS", "")
@@ -35,7 +34,7 @@ MONITORED_CHANNELS = [int(cid.strip()) for cid in raw_channels.split(",") if cid
 
 def extract_roblox_link(text):
     """Helper to find Roblox server links in text structures."""
-    match = re.search(r'https://www\.roblox\.com/share\?code=[^\s\s]+', text)
+    match = re.search(r'https://www\.roblox\.com/share\?code=[^\s]+', text)
     return match.group(0) if match else None
 
 @bot.event
@@ -67,7 +66,7 @@ async def on_message(message):
         return
 
     # Look for biome trigger phrases
-    if "Biome Started" in text_to_search or "Biome Started:" in text_to_search:
+    if "Biome Started" in text_to_search:
         # Pull out the biome name using regex patterns
         biome_match = re.search(r'(?:Biome Started[:\-]\s*)([A-Z_a-z0-9\s]+)', text_to_search)
         biome_name = biome_match.group(1).strip() if biome_match else "Unknown Biome"
