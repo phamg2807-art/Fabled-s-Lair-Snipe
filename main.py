@@ -2,14 +2,32 @@ import discord
 import requests
 import re
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from discord.ext import commands
 
-# Retrieve configurations from Render Environment Variables safely
+# --- TINY WEB SERVER FOR RENDER FREE TIER ---
+class HealthCheckServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_health_server():
+    # Render passes a PORT variable automatically on the free tier
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckServer)
+    print(f"🌐 Internal web server listening on port {port}")
+    server.serve_forever()
+
+# Start the web server in a separate background thread so it doesn't block the Discord bot
+threading.Thread(target=run_health_server, daemon=True).start()
+# --------------------------------------------
+
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-# Read targeted channel IDs from environment variable (comma-separated string, e.g., "12345,67890")
 TARGET_CHANNELS = [int(cid.strip()) for cid in os.getenv("CHANNEL_IDS", "").split(",") if cid.strip()]
 
 if not TOKEN:
@@ -20,29 +38,13 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 def clean_biome_name(raw_text):
-    """
-    Cleans up titles from various macros (SolsScope, DroidScope, Slaoq's, etc.)
-    Example: 'Biome Started - SNOWY' -> 'Snowy'
-    Example: 'Biome Started: WINDY' -> 'Windy'
-    """
     if not raw_text:
         return "Normal"
-        
     text = raw_text.upper()
-    
-    # Ignore 'Biome Ended' logs entirely so they don't overwrite active biomes awkwardly
     if "ENDED" in text or "LEFT" in text:
         return None
-
-    # Remove known common macro filler text phrases
-    text = text.replace("BIOME STARTED", "")
-    text = text.replace("HAS STARTED!", "")
-    text = text.replace("PRIVATE SERVER", "")
-    
-    # Strip out leftover symbols like colons, dashes, and extra whitespace
-    text = re.sub(r'[:\-\[\]\(\)]', '', text)
-    text = text.strip()
-    
+    text = text.replace("BIOME STARTED", "").replace("HAS STARTED!", "").replace("PRIVATE SERVER", "")
+    text = re.sub(r'[:\-\[\]\(\)]', '', text).strip()
     return text.capitalize() if text else "Normal"
 
 @bot.event
@@ -52,66 +54,45 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    # Process if message is from a webhook inside our specified tracking channels
     if message.channel.id in TARGET_CHANNELS and message.webhook_id:
         biome = "Normal"
         roblox_link = None
         raw_title = ""
         
-        # 1. Look inside Embeds (Where almost all Sol's RNG macros output data)
         if message.embeds:
             for embed in message.embeds:
                 embed_dict = embed.to_dict()
-                
                 if embed.title:
                     raw_title = embed.title
                 elif embed.description and not raw_title:
                     raw_title = embed.description
-                
-                links = re.findall(r'(https://www\.roblox\.com/share\?code=[^\s"\'>]+)', str(embed_dict))
+                links = re.findall(r'(https://www.roblox.com/share?code=[^s"\'>]+)', str(embed_dict))
                 if links:
                     roblox_link = links[0].split(')')[0].split(']')[0]
 
-        # 2. Fallback to plaintext message scanning
         if not roblox_link:
-            links = re.findall(r'(https://www\.roblox\.com/share\?code=[^\s"\'>]+)', message.content)
+            links = re.findall(r'(https://www.roblox.com/share?code=[^s"\'>]+)', message.content)
             if links:
                 roblox_link = links[0]
             if message.content and not raw_title:
                 raw_title = message.content
 
-        # 3. Clean up the extracted biome name
         biome = clean_biome_name(raw_title)
-        
         if biome is None:
-            print("🛑 Biome ended log skipped.")
             return
 
-        # 4. Process and push to database
         if roblox_link:
             print(f"🎯 Snipe detected! Parsed Biome: {biome}")
-            
             if not SUPABASE_URL or not SUPABASE_KEY:
-                print(f"⚠️ Supabase environment variables not set yet. Link captured: {roblox_link}")
+                print(f"⚠️ Supabase setup pending. Link: {roblox_link}")
                 return
-
-            headers = {
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}",
-                "Content-Type": "application/json",
-                "Prefer": "resolution=merge-duplicates"
-            }
-            
-            payload = {
-                "server_link": roblox_link,
-                "biome_name": biome
-            }
-            
+            headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"}
+            payload = {"server_link": roblox_link, "biome_name": biome}
             try:
                 response = requests.post(SUPABASE_URL, json=payload, headers=headers)
-                print(f"📊 Database sync status code: {response.status_code}")
+                print(f"📊 Database sync status: {response.status_code}")
             except Exception as e:
-                print(f"❌ Failed to sync data to Supabase: {e}")
+                print(f"❌ Database error: {e}")
 
     await bot.process_commands(message)
 
