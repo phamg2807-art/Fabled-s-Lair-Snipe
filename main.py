@@ -1,17 +1,19 @@
 import discord
 from discord.ext import commands
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
 import logging
 import re
 import os
 
-# 1. Setup instant, real-time unbuffered logging format
+# 1. Setup real-time unbuffered logging format
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%H:%M:%S %p'
 )
 
-# 2. Configure Gateway Intents (Requires Message Content enabled in Developer Portal)
+# 2. Configure Gateway Intents
 intents = discord.Intents.default()
 intents.messages = True
 intents.guilds = True
@@ -19,9 +21,27 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# 3. Lightweight Web Server to satisfy Render's Port Binding & Health Checks
+class RenderHealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Fabled Helper: System Online and Listening.")
+        
+    def log_message(self, format, *args):
+        # Keeps your Render log clean by not printing every single health check ping
+        pass
+
+def keep_alive():
+    port = int(os.getenv("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), RenderHealthCheckHandler)
+    logging.info(f"WEB SERVER: Health check listener bound to port {port}")
+    server.serve_forever()
+
 @bot.event
 async def on_ready():
-    logging.info("SYSTEM ONLINE: Fabled's Helper logged into Discord Gateway successfully.")
+    logging.info("SYSTEM ONLINE: logged into Discord Gateway successfully.")
     logging.info("--- START OF VISIBLE CHANNELS CHECKLIST ---")
     
     for guild in bot.guilds:
@@ -29,7 +49,6 @@ async def on_ready():
         for channel in guild.text_channels:
             c_name_lower = channel.name.lower()
             
-            # Exclude forward/found channels from target matching per instruction
             if "forward" in c_name_lower or "found" in c_name_lower:
                 tag = "[ . ] Text Context"
             elif "webhook" in c_name_lower:
@@ -37,78 +56,81 @@ async def on_ready():
             else:
                 tag = "[ . ] Text Context"
             
-            # FIXED: Converted channel.id to string to fix the 'int' object has no attribute 'ljust' bug
+            # Guarantees no int object ljust attribute crashes
             logging.info(f"  {tag} ID: {str(channel.id).ljust(19)} | #{channel.name}")
             
     logging.info("--- END OF VISIBLE CHANNELS CHECKLIST ---")
-    logging.info("Your service is live 🚀")
+    logging.info("Your service is live and tracking 🚀")
 
 @bot.event
 async def on_message(message):
-    # Prevent the bot from processing its own messages
     if message.author == bot.user:
         return
 
     channel_name = message.channel.name.lower()
     
-    # FILTER: Instantly ignore any message originating from Forward or Found channels
+    # FILTER: Instantly ignore any forward or found channel rooms
     if "forward" in channel_name or "found" in channel_name:
-        logging.info(f"[FILTERED] Msg from '{message.author}' in #{message.channel.name} dropped (Forward/Found channels ignored).")
         return
 
-    # Only parse channels containing 'webhook'
+    # Target webhook designated monitoring logs
     if "webhook" not in channel_name:
         return
 
-    # Check for embed structures
     if not message.embeds:
         return
 
-    logging.info(f"[DEBUG] Bot captured an event from '{message.author}' in Channel: #{message.channel.name} (ID: {message.channel.id})")
-    logging.info(f"[DEBUG] Message contains {len(message.embeds)} embed structure(s). Parsing content fields...")
-
     for embed in message.embeds:
-        title = embed.title if embed.title else ""
-        description = embed.description if embed.description else ""
+        # Aggressive Text Aggregation: Collect text from ALL areas of the embed 
+        # to ensure timestamps in titles don't bypass keyword captures.
+        text_elements = []
+        if embed.title: text_elements.append(embed.title)
+        if embed.description: text_elements.append(embed.description)
+        if embed.author and embed.author.name: text_elements.append(embed.author.name)
         
-        # Combine visible text fields to ensure accurate keyword capturing
-        combined_text = f"{title} {description}"
-        logging.info(f"  ♦ Title parsed: {title}")
+        for field in embed.fields:
+            if field.name: text_elements.append(field.name)
+            if field.value: text_elements.append(field.value)
+            
+        combined_text = " ".join(text_elements)
 
-        # Check for event keywords
-        is_start = bool(re.search(r"started", combined_text, re.IGNORECASE))
-        is_end = bool(re.search(r"ended", combined_text, re.IGNORECASE))
+        # Catch keywords anywhere within the aggregated pool
+        is_start = bool(re.search(r"\b(started|start)\b", combined_text, re.IGNORECASE))
+        is_end = bool(re.search(r"\b(ended|end)\b", combined_text, re.IGNORECASE))
 
         if not is_start and not is_end:
-            logging.info(f"[DEBUG] Message dropped inside monitored channel; neither 'Biome Started' nor 'Biome Ended' keywords found.")
+            logging.info(f"[DEBUG] Message from '{message.author}' in #{message.channel.name} dropped: No valid active event keywords found.")
             continue
 
-        # Extract Biome Name (Handles both "Biome Started: NAME" and "Biome Started - NAME")
+        # Smart Biome Parsing Strategy
+        # First priority: Look for standard structured patterns
         biome_match = re.search(r"(?:Biome\s+(?:Started|Ended)(?:\s*:\s*|\s*-\s*))([A-Z_]+)", combined_text, re.IGNORECASE)
         if biome_match:
             biome_name = biome_match.group(1).upper()
         else:
-            # Fallback regex to pick up capitalized keywords if the structure shifts
-            words = re.findall(r"\b[A-Z]{4,}\b", combined_text)
-            biome_name = words[0] if words else "UNKNOWN BIOME"
+            # Second priority: Match against popular explicit game biome titles 
+            known_biomes = ["WINDY", "SNOWY", "NORMAL", "CORRUPTION", "RAINY", "STARFALL", "GLITCHED", "DREAMSPACE", "CYBERSPACE"]
+            found_known = [b for b in known_biomes if b.lower() in combined_text.lower()]
+            if found_known:
+                biome_name = found_known[0]
+            else:
+                # Fallback: Isolate capitalized words, excluding common layout structures
+                words = re.findall(r"\b[A-Z]{4,}\b", combined_text)
+                filtered_words = [w for w in words if w not in ["START", "STARTED", "ENDED", "BIOME", "TIME", "INVITE", "SERVER", "PRIVATE", "LINK"]]
+                biome_name = filtered_words[0] if filtered_words else "UNKNOWN BIOME"
 
         event_type = "STARTED" if is_start else "ENDED"
         roblox_link = "None"
 
-        # SMART LINK LOGIC: Extract the Roblox server link strictly on Biome Start events
+        # Link Extraction: Only parsed during start up events
         if is_start:
-            # Aggregate all possible fields inside embed to scan for the invite URL
-            search_pool = combined_text
-            for field in embed.fields:
-                search_pool += f" {field.name} {field.value}"
-            
-            link_match = re.search(r"https://www\.roblox\.com/share\?\S+", search_pool)
+            link_match = re.search(r"https://www\.roblox\.com/share\?\S+", combined_text)
             if link_match:
                 roblox_link = link_match.group(0)
             else:
-                logging.warning(f"⚠ Biome matched, but no Roblox share link was found in the text data.")
+                logging.warning(f"⚠ Event detected, but no valid Roblox invite share link was located in the structural fields.")
 
-        # Clean, streamlined console extraction logging format
+        # Clean, console extraction display format
         print("—" * 60)
         print(f"🔮 EXTRACTION LOG - BIOME {event_type}")
         print("—" * 60)
@@ -119,9 +141,11 @@ async def on_message(message):
         print(f"🔗 Link Found   : {roblox_link}")
         print("—" * 60)
 
-# Pulls your Discord token securely from Render's Environment Variables
+# Fire up the HTTP keep-alive daemon thread before triggering the Discord loop
+threading.Thread(target=keep_alive, daemon=True).start()
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 if TOKEN:
     bot.run(TOKEN)
 else:
-    print("ERROR: Missing 'DISCORD_TOKEN' variable inside your Render Environment Settings!")
+    print("CRITICAL ERROR: Missing 'DISCORD_TOKEN' variable inside your Render Environment Settings!")
