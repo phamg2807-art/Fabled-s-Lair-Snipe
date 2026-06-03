@@ -1,10 +1,23 @@
 import os
 import re
+import logging
 from flask import Flask
 from threading import Thread
 import discord
 from discord.ext import commands
 from supabase import create_client, Client
+
+# ==========================================
+# 0. STREAM LOGGING & SILENCE FLASK SPAM
+# ==========================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+
+# This line completely shuts up the annoying "GET / HTTP/1.1" console logs
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 # ==========================================
 # 1. HEALTH CHECK SERVER FOR RENDER
@@ -32,11 +45,11 @@ supabase: Client = None
 if supabase_url and supabase_key:
     try:
         supabase = create_client(supabase_url, supabase_key)
-        print("🔗 Successfully connected to the Supabase database backend!")
+        logging.info("🔗 Successfully connected to the Supabase database backend!")
     except Exception as e:
-        print(f"❌ Failed to connect to Supabase: {e}")
+        logging.error(f"❌ Failed to connect to Supabase: {e}")
 else:
-    print("⚠️ Supabase credentials missing. Data will log to console but won't save to the database.")
+    logging.warning("⚠️ Supabase credentials missing. Data will log to console but won't save to the database.")
 
 # ==========================================
 # 3. DISCORD BOT SETUP
@@ -49,18 +62,26 @@ raw_channels = os.getenv("CHANNEL_IDS", "")
 MONITORED_CHANNELS = [int(cid.strip()) for cid in raw_channels.split(",") if cid.strip().isdigit()]
 
 def extract_roblox_link(text):
-    match = re.search(r'https://www\.roblox\.com/share\?code=[^\s]+', text)
+    match = re.search(r'https://www.roblox.com/share?code=[^s]+', text)
     return match.group(0) if match else None
 
 @bot.event
 async def on_ready():
-    print(f"🚀 {bot.user.name} has successfully logged into Discord Gateway!")
-    print(f"📢 Active Monitoring Channels: {MONITORED_CHANNELS}")
+    logging.info(f"🚀 {bot.user.name} has successfully logged into Discord Gateway!")
+    logging.info(f"📢 Target Monitored IDs from Render: {MONITORED_CHANNELS}")
+    
+    # 👇 DIAGNOSTIC TRACKER: Prints every single channel the bot can actually access
+    logging.info("📋 --- START OF VISIBLE CHANNELS CHECKLIST ---")
+    for guild in bot.guilds:
+        logging.info(f"🏰 Server Name: {guild.name}")
+        for channel in guild.text_channels:
+            logging.info(f"   🔹 ID: {channel.id} | Name: #{channel.name}")
+    logging.info("📋 --- END OF VISIBLE CHANNELS CHECKLIST ---")
 
 @bot.event
 async def on_message(message):
-    # 👇 DIAGNOSTIC TRACKER: Prints everything the bot can see
-    print(f"📩 [DEBUG] Bot saw a message from '{message.author}' in Channel ID: {message.channel.id}")
+    # Forced streaming trace tracker
+    logging.info(f"📩 [DEBUG] Bot captured an event from '{message.author}' in Channel ID: {message.channel.id}")
     
     if message.channel.id not in MONITORED_CHANNELS:
         return
@@ -68,17 +89,18 @@ async def on_message(message):
     text_to_search = message.content or ""
     
     if message.embeds:
-        print(f"📦 [DEBUG] Message contains {len(message.embeds)} embed structure(s). Parsing content...")
+        logging.info(f"📦 [DEBUG] Message contains {len(message.embeds)} embed structure(s). Parsing content fields...")
         for embed in message.embeds:
             if embed.title:
                 text_to_search += f"\n{embed.title}"
-                print(f"   🔹 Title found: {embed.title}")
+                logging.info(f"   🔹 Title parsed: {embed.title}")
             if embed.description:
                 text_to_search += f"\n{embed.description}"
             for field in embed.fields:
                 text_to_search += f"\n{field.name} {field.value}"
 
     if not text_to_search.strip():
+        logging.warning("⚠️ [DEBUG] Captured message text content is completely empty.")
         return
 
     if "Biome Started" in text_to_search:
@@ -90,25 +112,24 @@ async def on_message(message):
             
         roblox_link = extract_roblox_link(text_to_search)
         
-        print(f"🎯 Snipe detected! Parsed Biome: {biome_name}")
+        logging.info(f"🎯 Snipe detected! Parsed Biome: {biome_name}")
         
         if roblox_link:
-            print(f"🔗 Server Link: {roblox_link}")
+            logging.info(f"🔗 Server Link: {roblox_link}")
             
-            # Insert the snipe directly into your Supabase 'servers' table
             if supabase:
                 try:
                     data, count = supabase.table("servers").insert({
                         "server_link": roblox_link, 
                         "biome_name": biome_name
                     }).execute()
-                    print("✅ Successfully pushed new server entry to Supabase backend!")
+                    logging.info("✅ Successfully pushed new server entry to Supabase backend!")
                 except Exception as db_err:
-                    print(f"❌ Database insert failed: {db_err}")
+                    logging.error(f"❌ Database insert failed: {db_err}")
         else:
-            print("⚠️ Biome matched, but no Roblox share link was found in the text data.")
+            logging.warning("⚠️ Biome matched, but no Roblox share link was found in the text data.")
     else:
-        print("❌ [DEBUG] Message received inside monitored channel, but 'Biome Started' text pattern was missing.")
+        logging.info("❌ [DEBUG] Message dropped inside monitored channel, but 'Biome Started' phrase keyword was missing.")
 
     await bot.process_commands(message)
 
@@ -124,4 +145,4 @@ if __name__ == "__main__":
     if token:
         bot.run(token)
     else:
-        print("❌ CRITICAL ERROR: 'DISCORD_BOT_TOKEN' environment variable is missing!")
+        logging.error("❌ CRITICAL ERROR: 'DISCORD_BOT_TOKEN' environment variable is missing!")
