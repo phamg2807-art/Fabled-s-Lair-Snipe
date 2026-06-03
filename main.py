@@ -59,15 +59,20 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
+    # 👇 DIAGNOSTIC TRACKER: Prints everything the bot can see
+    print(f"📩 [DEBUG] Bot saw a message from '{message.author}' in Channel ID: {message.channel.id}")
+    
     if message.channel.id not in MONITORED_CHANNELS:
         return
 
     text_to_search = message.content or ""
     
     if message.embeds:
+        print(f"📦 [DEBUG] Message contains {len(message.embeds)} embed structure(s). Parsing content...")
         for embed in message.embeds:
             if embed.title:
                 text_to_search += f"\n{embed.title}"
+                print(f"   🔹 Title found: {embed.title}")
             if embed.description:
                 text_to_search += f"\n{embed.description}"
             for field in embed.fields:
@@ -102,6 +107,8 @@ async def on_message(message):
                     print(f"❌ Database insert failed: {db_err}")
         else:
             print("⚠️ Biome matched, but no Roblox share link was found in the text data.")
+    else:
+        print("❌ [DEBUG] Message received inside monitored channel, but 'Biome Started' text pattern was missing.")
 
     await bot.process_commands(message)
 
