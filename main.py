@@ -313,17 +313,21 @@ async def on_message(message):
 
     cid_str = str(message.channel.id)
     now_iso = datetime.now(timezone.utc).isoformat()
+    
+    # CO-ISOLATION ENGINE: Check if this stream is a broadcast forwarder rather than a true user webhook target
+    is_forwarder = "forward" in channel_name
 
-    # Process and preserve historical entry tracking metrics per channel pipeline
-    if cid_str not in webhook_activity:
-        webhook_activity[cid_str] = {
-            "name": message.channel.name,
-            "last_seen": now_iso,
-            "total_messages": 1
-        }
-    else:
-        webhook_activity[cid_str]["last_seen"] = now_iso
-        webhook_activity[cid_str]["total_messages"] += 1
+    # Process and preserve historical entry tracking metrics per channel pipeline ONLY for true webhooks
+    if not is_forwarder:
+        if cid_str not in webhook_activity:
+            webhook_activity[cid_str] = {
+                "name": message.channel.name,
+                "last_seen": now_iso,
+                "total_messages": 1
+            }
+        else:
+            webhook_activity[cid_str]["last_seen"] = now_iso
+            webhook_activity[cid_str]["total_messages"] += 1
 
     if not message.embeds:
         return
@@ -351,7 +355,7 @@ async def on_message(message):
 
         roblox_link = "None"
         if is_start:
-            link_match = re.search(r"https://www\.roblox\.com/share\?\S+", combined_text)
+            link_match = re.search(r"https://www.roblox.com/share?S+", combined_text)
             if link_match:
                 roblox_link = link_match.group(0)
 
@@ -402,7 +406,7 @@ async def on_message(message):
             print(f"🛒 EXTRACTION LOG - MERCHANT {event_type}")
             print("—" * 60)
             print(f"🏰 Server Name  : {guild_name}")
-            print(f"💬 Channel      : #{message.channel.name} (ID: {message.channel.id})")
+            print(f"💬 Channel      : #{message.channel.name} (ID: {message.channel.id}) {'[FORWARDER SOURCE]' if is_forwarder else ''}")
             print(f"👤 Author       : {message.author}")
             print(f"🧩 Parsed Item  : {merchant_name} ({event_type})")
             print(f"🔗 Link Found   : {roblox_link}")
@@ -452,7 +456,7 @@ async def on_message(message):
             print(f"🔮 EXTRACTION LOG - BIOME {event_type}")
             print("—" * 60)
             print(f"🏰 Server Name  : {guild_name}")
-            print(f"💬 Channel      : #{message.channel.name} (ID: {message.channel.id})")
+            print(f"💬 Channel      : #{message.channel.name} (ID: {message.channel.id}) {'[FORWARDER SOURCE]' if is_forwarder else ''}")
             print(f"👤 Author       : {message.author}")
             print(f"🧩 Parsed Item  : {biome_name} ({event_type})")
             print(f"🔗 Link Found   : {roblox_link}")
