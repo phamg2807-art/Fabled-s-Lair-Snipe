@@ -46,6 +46,20 @@ webhook_activity = {}   # channel_id -> { name, last_seen, total_messages, accou
 active_live_events = {} # event_key  -> { type, name, started_at, server, … }
 
 # ============================================================
+#  4b. MERCHANT DEPARTURE WARNING CONFIG
+# ============================================================
+# Set MERCHANT_DEPART_CHANNEL_ID in env to send warnings to a specific channel.
+# If not set, warnings go to the same channel the merchant spawned in.
+MERCHANT_DEPART_CHANNEL_ID = os.getenv("MERCHANT_DEPART_CHANNEL_ID")
+
+# Seconds before the 3-min mark to fire the warning (default: 30s early)
+MERCHANT_WARN_BEFORE_S = 30
+
+# Tracks which event keys have already had a departure warning sent
+# so we never spam the same warning twice
+_departure_warned: set = set()
+
+# ============================================================
 #  5. PRE-COMPILED HOT-PATH REGEX
 # ============================================================
 ROBLOX_LINK_RE = re.compile(r"https://www\.roblox\.com/share\?\S+")
