@@ -1,100 +1,103 @@
-import discord
-import requests
-import re
 import os
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import re
+import asyncio
+from flask import Flask
+from threading import Thread
+import discord
 from discord.ext import commands
 
-# --- TINY WEB SERVER FOR RENDER FREE TIER ---
-class HealthCheckServer(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Bot is alive!")
+# ==========================================
+# 1. HEALTH CHECK SERVER FOR RENDER
+# ==========================================
+app = Flask('')
 
-def run_health_server():
-    # Render passes a PORT variable automatically on the free tier
-    port = int(os.getenv("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckServer)
-    print(f"🌐 Internal web server listening on port {port}")
-    server.serve_forever()
+@app.route('/')
+def home():
+    return "Your Fabled Helper Bot is completely alive!", 200
 
-# Start the web server in a separate background thread so it doesn't block the Discord bot
-threading.Thread(target=run_health_server, daemon=True).start()
-# --------------------------------------------
+@app.route('/healthz')
+def healthz():
+    return "OK", 200
 
-TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-TARGET_CHANNELS = [int(cid.strip()) for cid in os.getenv("CHANNEL_IDS", "").split(",") if cid.strip()]
+def run_server():
+    app.run(host='0.0.0.0', port=8080)
 
-if not TOKEN:
-    print("❌ ERROR: DISCORD_BOT_TOKEN environment variable is missing!")
-
+# ==========================================
+# 2. DISCORD BOT SETUP
+# ==========================================
 intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+intents.message_content = True  # Crucial for reading message data
+bot = commands.Bot(command_code="!", intents=intents)
 
-def clean_biome_name(raw_text):
-    if not raw_text:
-        return "Normal"
-    text = raw_text.upper()
-    if "ENDED" in text or "LEFT" in text:
-        return None
-    text = text.replace("BIOME STARTED", "").replace("HAS STARTED!", "").replace("PRIVATE SERVER", "")
-    text = re.sub(r'[:\-\[\]\(\)]', '', text).strip()
-    return text.capitalize() if text else "Normal"
+# Fetch channel IDs from environment variable
+raw_channels = os.getenv("CHANNEL_IDS", "")
+MONITORED_CHANNELS = [int(cid.strip()) for cid in raw_channels.split(",") if cid.strip().isdigit()]
+
+def extract_roblox_link(text):
+    """Helper to find Roblox server links in text structures."""
+    match = re.search(r'https://www\.roblox\.com/share\?code=[^\s\s]+', text)
+    return match.group(0) if match else None
 
 @bot.event
 async def on_ready():
-    print(f"🟢 Fabled's Lair Multi-Macro Bot is online as {bot.user}")
-    print(f"📢 Monitoring Channels: {TARGET_CHANNELS}")
+    print(f"🚀 {bot.user.name} has successfully logged into Discord Gateway!")
+    print(f"📢 Active Monitoring Channels: {MONITORED_CHANNELS}")
 
 @bot.event
 async def on_message(message):
-    if message.channel.id in TARGET_CHANNELS and message.webhook_id:
-        biome = "Normal"
-        roblox_link = None
-        raw_title = ""
+    # Ensure the message is arriving in one of our target channel IDs
+    if message.channel.id not in MONITORED_CHANNELS:
+        return
+
+    text_to_search = message.content or ""
+    
+    # --- WEBHOOK EMBED PARSING ---
+    # Extract data if the macro message is formatted inside an embed structure
+    if message.embeds:
+        for embed in message.embeds:
+            if embed.title:
+                text_to_search += f"\n{embed.title}"
+            if embed.description:
+                text_to_search += f"\n{embed.description}"
+            for field in embed.fields:
+                text_to_search += f"\n{field.name} {field.value}"
+
+    # If there's no usable text data, skip processing
+    if not text_to_search.strip():
+        return
+
+    # Look for biome trigger phrases
+    if "Biome Started" in text_to_search or "Biome Started:" in text_to_search:
+        # Pull out the biome name using regex patterns
+        biome_match = re.search(r'(?:Biome Started[:\-]\s*)([A-Z_a-z0-9\s]+)', text_to_search)
+        biome_name = biome_match.group(1).strip() if biome_match else "Unknown Biome"
         
-        if message.embeds:
-            for embed in message.embeds:
-                embed_dict = embed.to_dict()
-                if embed.title:
-                    raw_title = embed.title
-                elif embed.description and not raw_title:
-                    raw_title = embed.description
-                links = re.findall(r'(https://www.roblox.com/share?code=[^s"\'>]+)', str(embed_dict))
-                if links:
-                    roblox_link = links[0].split(')')[0].split(']')[0]
-
-        if not roblox_link:
-            links = re.findall(r'(https://www.roblox.com/share?code=[^s"\'>]+)', message.content)
-            if links:
-                roblox_link = links[0]
-            if message.content and not raw_title:
-                raw_title = message.content
-
-        biome = clean_biome_name(raw_title)
-        if biome is None:
-            return
-
+        # Clean up common secondary text lines from the match
+        if "\n" in biome_name:
+            biome_name = biome_name.split("\n")[0].strip()
+            
+        roblox_link = extract_roblox_link(text_to_search)
+        
+        print(f"🎯 Snipe detected! Parsed Biome: {biome_name}")
         if roblox_link:
-            print(f"🎯 Snipe detected! Parsed Biome: {biome}")
-            if not SUPABASE_URL or not SUPABASE_KEY:
-                print(f"⚠️ Supabase setup pending. Link: {roblox_link}")
-                return
-            headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"}
-            payload = {"server_link": roblox_link, "biome_name": biome}
-            try:
-                response = requests.post(SUPABASE_URL, json=payload, headers=headers)
-                print(f"📊 Database sync status: {response.status_code}")
-            except Exception as e:
-                print(f"❌ Database error: {e}")
+            print(f"🔗 Server Link: {roblox_link}")
+        else:
+            print("⚠️ Biome matched, but no Roblox share link was found in the text data.")
 
     await bot.process_commands(message)
 
-if TOKEN:
-    bot.run(TOKEN)
+# ==========================================
+# 3. EXECUTION LAYOUT
+# ==========================================
+if __name__ == "__main__":
+    # Start up the web ping utility thread
+    server_thread = Thread(target=run_server)
+    server_thread.daemon = True
+    server_thread.start()
+    
+    # Fire up the Discord Gateway
+    token = os.getenv("DISCORD_BOT_TOKEN")
+    if token:
+        bot.run(token)
+    else:
+        print("❌ CRITICAL ERROR: 'DISCORD_BOT_TOKEN' environment variable is missing!")
