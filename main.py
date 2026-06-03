@@ -17,7 +17,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 
-# This line completely shuts up the annoying "GET / HTTP/1.1" console logs
+# Shut up the annoying "GET / HTTP/1.1" console logs from uptime checkers
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 # ==========================================
@@ -57,16 +57,23 @@ else:
 # ==========================================
 intents = discord.Intents.default()
 intents.message_content = True  
+# FIX LỖI 3: Đổi từ command_code thành command_prefix chuẩn của discord.py
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 raw_channels = os.getenv("CHANNEL_IDS", "")
 MONITORED_CHANNELS = [int(cid.strip()) for cid in raw_channels.split(",") if cid.strip().isdigit()]
 
-# The list of keywords that identify a snipe/drop channel dynamically
+# Danh sách từ khóa nhận diện các kênh săn bot tự động
 TARGET_KEYWORDS = ["webhook", "forward", "found", "macro"]
 
+# Danh sách các Biome cụ thể trong Sol's RNG để làm bộ quét dự phòng tối cao
+KNOWN_BIOMES = [
+    "WINDY", "SNOWY", "RAINY", "GLITCHED", "GLITCH", "CORRUPTION", 
+    "HELL", "STARFALL", "METEOR", "PUMPKIN", "NORMAL", "GRAVEYARD", 
+    "SANDSTORM", "BLOOD MOON", "CLASSIC"
+]
+
 def extract_roblox_link(text):
-    # Upgraded Regex: Captures any variant of roblox.com links while safely ignoring trailing markdown ) or ]
     match = re.search(r'https://(?:[a-zA-Z0-9\-]+\.)?roblox\.com/[^\s\)\}\]\"\']+', text)
     return match.group(0) if match else None
 
@@ -74,16 +81,11 @@ def clean_entity_name(raw_name):
     """Deep cleans names by removing markdown artifacts, formatting leaks, and stray emojis."""
     if not raw_name:
         return ""
-    # Strip markdown emphasis blocks
     clean = raw_name.replace("**", "").replace("*", "").replace("__", "").replace("`", "").strip()
-    # Strip custom Discord timestamps/tags like <t:1780458194:F>
     clean = re.sub(r'<[^>]+>', '', clean).strip()
-    # Strip leading weird symbols, non-alphanumeric clutter, and layout emojis
     clean = re.sub(r'^[^A-Za-z0-9\s\(]+', '', clean).strip()
-    # Collapse multiple consecutive blank spaces into a single space
     clean = re.sub(r'\s+', ' ', clean)
     
-    # Catch structural edge cases where a label header leaks into the field value
     if clean.lower() in ["started", "ended", "spawned", "arrived", "unknown", ""]:
         return ""
     return clean
@@ -101,66 +103,77 @@ async def on_ready():
         for channel in guild.text_channels:
             is_target = any(keyword in channel.name.lower() for keyword in TARGET_KEYWORDS)
             tag = "[🔥 TARGET MATCH]" if is_target else "[🔹 Text Context]"
-            # FIXED: Converted channel.id to string before running string space justification padding
+            # FIX LỖI 1: Ép kiểu channel.id thành str() trước khi chạy .ljust() để không bị crash crash bot
             logging.info(f"   {tag} ID: {str(channel.id).ljust(19)} | #{channel.name}")
     logging.info("📋 --- END OF VISIBLE CHANNELS CHECKLIST ---")
     print("="*60 + "\n")
 
 @bot.event
 async def on_message(message):
-    # Ignore messages sent by the bot itself to prevent infinite loops
     if message.author == bot.user:
         return
 
-    # Fetch channel metadata safely
     channel_name = getattr(message.channel, "name", "").lower()
     guild_name = getattr(message.channel.guild, "name", "Direct Message / Unknown")
     
-    # Check if the channel matches any of our dynamic target keywords OR the backup ID list
     is_target_channel = any(keyword in channel_name for keyword in TARGET_KEYWORDS)
     is_fallback_id = message.channel.id in MONITORED_CHANNELS
 
-    # If it fails both checks, drop it immediately without logging to keep streaming output pristine
     if not (is_target_channel or is_fallback_id):
         return
 
     text_to_search = message.content or ""
     
-    # Restructured tracking labels to break down separate embed elements elegantly
     if message.embeds:
         for embed in message.embeds:
             if embed.title:
                 text_to_search += f"\nTitle: {embed.title}"
+            if embed.url:
+                text_to_search += f"\nEmbed URL: {embed.url}"
             if embed.description:
                 text_to_search += f"\nDescription: {embed.description}"
             for field in embed.fields:
                 text_to_search += f"\nField Name: {field.name}\nField Value: {field.value}"
 
+    if message.components:
+        for row in message.components:
+            for component in row.children:
+                if hasattr(component, 'url') and component.url:
+                    text_to_search += f"\nButton URL: {component.url}"
+
     if not text_to_search.strip():
         return
 
-    # Dynamic parsing logic for both Biomes and Traveling Merchants
-    is_biome = "Biome Started" in text_to_search
+    # Quét trạng thái hoạt động chính xác
+    is_biome = "Biome Started" in text_to_search or "Biome Ended" in text_to_search or any(b in text_to_search.upper() for b in KNOWN_BIOMES)
     is_merchant = any(k in text_to_search for k in ["Merchant", "Mari", "Jester"])
 
     if is_biome or is_merchant:
         entity_name = ""
-        event_type = "BIOME DROP" if is_biome else "MERCHANT SPAWN"
+        status = "STARTED"
+        
+        if "Ended" in text_to_search or "ended" in text_to_search.lower():
+            status = "ENDED"
+            
+        if is_biome:
+            event_type = f"BIOME {status}"
+        else:
+            event_type = "MERCHANT SPAWN"
         
         # ------------------------------------------------------------
-        # STRATIFIED BIOME EXTRACTION LAYER
+        # EXTRACTION LAYER FOR BIOMES
         # ------------------------------------------------------------
         if is_biome:
-            # Strategy A: Same-line extraction
-            biome_match = re.search(r'Biome\s*Started[\s\*\:\-]*([^\n]+)', text_to_search, re.IGNORECASE)
+            # Strategy A: Quét cùng dòng dạng (Started/Ended)
+            biome_match = re.search(r'Biome\s*(?:Started|Ended)[\s\*\:\-]*([^\n]+)', text_to_search, re.IGNORECASE)
             if biome_match:
                 entity_name = clean_entity_name(biome_match.group(1))
             
-            # Strategy B: Multi-line / Separate Field layout translation
+            # Strategy B: Quét đa dòng từ dữ liệu thô
             if not entity_name:
                 lines = text_to_search.split("\n")
                 for i, line in enumerate(lines):
-                    if "biome started" in line.lower() and i + 1 < len(lines):
+                    if any(k in line.lower() for k in ["biome started", "biome ended"]) and i + 1 < len(lines):
                         next_line = lines[i+1]
                         if "field value:" in next_line.lower():
                             entity_name = clean_entity_name(next_line.split("Field Value:", 1)[1])
@@ -170,19 +183,27 @@ async def on_message(message):
                             if entity_name: 
                                 break
 
-            # Strategy C: General structural keyword fallback catch
+            # Strategy C: Kiểm tra cấu trúc trường dữ liệu "Field Name"
             if not entity_name:
-                for line in text_to_search.split("\n"):
-                    if "biome:" in line.lower() and "started" not in line.lower():
-                        entity_name = clean_entity_name(line.split("Biome:", 1)[1])
-                        if entity_name: 
+                lines = text_to_search.split("\n")
+                for i, line in enumerate(lines):
+                    if "field name:" in line.lower() and "biome" in line.lower():
+                        if i + 1 < len(lines) and "field value:" in lines[i+1].lower():
+                            entity_name = clean_entity_name(lines[i+1].split("Field Value:", 1)[1])
                             break
+            
+            # FIX LỖI 2 (VIBE SAFETY NET): Nếu vẫn không tìm được hoặc ra chữ Unknown, quét toàn bộ text để tìm tên Biome gốc
+            if not entity_name or entity_name.lower() == "unknown biome":
+                for biome_keyword in KNOWN_BIOMES:
+                    if biome_keyword in text_to_search.upper():
+                        entity_name = biome_keyword
+                        break
             
             if not entity_name:
                 entity_name = "Unknown Biome"
             
         # ------------------------------------------------------------
-        # STRATIFIED MERCHANT EXTRACTION LAYER
+        # EXTRACTION LAYER FOR MERCHANTS
         # ------------------------------------------------------------
         else:
             if "Mari" in text_to_search:
@@ -190,12 +211,10 @@ async def on_message(message):
             elif "Jester" in text_to_search:
                 entity_name = "Merchant (Jester)"
             else:
-                # Strategy A: Same-line extraction
                 merchant_match = re.search(r'Merchant(?:s)?(?:[\s\w]+)?[\s\*\:\-]*([^\n]+)', text_to_search, re.IGNORECASE)
                 if merchant_match:
                     entity_name = clean_entity_name(merchant_match.group(1))
                 
-                # Strategy B: Multi-line layout translation
                 if not entity_name:
                     lines = text_to_search.split("\n")
                     for i, line in enumerate(lines):
@@ -213,9 +232,10 @@ async def on_message(message):
                     entity_name = "Traveling Merchant"
             
         roblox_link = extract_roblox_link(text_to_search)
-        
+        db_display_name = f"{entity_name} ({status})" if is_biome else entity_name
+
         # ------------------------------------------------------------
-        # CLEAN & DETAILED VISUAL TERMINAL DASHBOARD
+        # CLEAN TERMINAL DASHBOARD
         # ------------------------------------------------------------
         print("\n" + "═"*60)
         print(f" 🎯 EXTRACTION LOG - {event_type}")
@@ -223,7 +243,7 @@ async def on_message(message):
         print(f" 🏰 Server Name : {guild_name}")
         print(f" 📺 Channel     : #{getattr(message.channel, 'name', 'Unknown')} (ID: {message.channel.id})")
         print(f" 👤 Author      : {message.author}")
-        print(f" ✨ Parsed Item : {entity_name}")
+        print(f" ✨ Parsed Item : {db_display_name}")
         print(f" 🔗 Link Found  : {roblox_link if roblox_link else 'None'}")
         print("─"*60)
         
@@ -232,7 +252,7 @@ async def on_message(message):
                 try:
                     data, count = supabase.table("servers").insert({
                         "server_link": roblox_link, 
-                        "biome_name": entity_name
+                        "biome_name": db_display_name
                     }).execute()
                     print(" ✅ STATUS      : Successfully pushed to Supabase DB Backend!")
                 except Exception as db_err:
@@ -244,8 +264,7 @@ async def on_message(message):
         print("═"*60 + "\n")
         
     else:
-        # Structured fine-grained trace logs for messages that dropped without matched triggers
-        logging.info(f"📥 [FILTERED] Msg from '{message.author}' in #{getattr(message.channel, 'name', 'Unknown')} dropped (No keyword matches found).")
+        logging.info(f"📥 [FILTERED] Msg from '{message.author}' in #{getattr(message.channel, 'name', 'Unknown')} dropped (No keyword matches found for Biome/Merchant).")
 
     await bot.process_commands(message)
 
