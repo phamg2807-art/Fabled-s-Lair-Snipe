@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from discord.ext import tasks
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 import logging
@@ -11,7 +12,7 @@ import time
 from datetime import datetime, timezone
 
 # ============================================================
-#  1. LOGGING — Real-time unbuffered, clean format
+#  1. LOGGING
 # ============================================================
 logging.basicConfig(
     level=logging.INFO,
@@ -40,17 +41,25 @@ dynamic_detected_channels = set()
 # ============================================================
 #  4. GLOBAL METRIC TRACKERS
 # ============================================================
-biome_counts     = {}
-merchant_counts  = {}
-webhook_activity = {}   # channel_id 
-active_live_events = {} # event_key  -> { type, name, started_at, server, … }
+biome_counts       = {}
+merchant_counts    = {}
+webhook_activity   = {}
+active_live_events = {}
 
 # ============================================================
-#  4b. MERCHANT DEPARTURE WARNING CONFIG
+#  4b. THROTTLE GLOBALS  <- FIX: declared at module level so functions can reference them
+# ============================================================
+_last_save_time   = 0.0
+_last_backup_time = 0.0
+SAVE_INTERVAL_S   = 15
+BACKUP_INTERVAL_S = 60
+
+# ============================================================
+#  4c. MERCHANT DEPARTURE CONFIG
 # ============================================================
 MERCHANT_DEPART_CHANNEL_ID = os.getenv("MERCHANT_DEPART_CHANNEL_ID")
-MERCHANT_WARN_BEFORE_S = 30
-_departure_warned: set = set()
+MERCHANT_WARN_BEFORE_S     = 30
+_departure_warned: set     = set()
 
 # ============================================================
 #  5. PRE-COMPILED HOT-PATH REGEX
@@ -61,11 +70,11 @@ EVENT_START_RE = re.compile(r"\b(started|start|spawned|arrived|appeared|has arri
 EVENT_END_RE   = re.compile(r"\b(ended|end|despawned|left|gone|has left|disappeared|expired|timed out)\b", re.IGNORECASE)
 
 KNOWN_BIOMES   = ["SINGULARITY","GLITCHED","DREAMSPACE","CYBERSPACE","STARFALL",
-                  "CORRUPTION","WINDY","SNOWY","RAINY","HELL","NORMAL","SAND", "UNKNOWN"]
+                  "CORRUPTION","WINDY","SNOWY","RAINY","HELL","NORMAL","SAND"]
 CLEAN_WORDS_RE = re.compile(r"\b[A-Z]{4,}\b")
 
 # ============================================================
-#  6. SESSION TIME MAP  (seconds)
+#  6. SESSION TIME MAP (seconds)
 # ============================================================
 EVENT_SESSION_LIMITS = {
     "WINDY":        120,
@@ -75,24 +84,25 @@ EVENT_SESSION_LIMITS = {
     "HELL":         666,
     "STARFALL":     650,
     "HEAVEN":       240,
-    "NULL":         99,
+    "NULL":          99,
+    "NORMAL":        60,
     "GLITCHED":     164,
     "DREAMSPACE":   192,
     "CYBERSPACE":   720,
     "SINGULARITY": 1200,
-    "NORMAL":       60,
-    "MARI (MERCHANT)":       180,
-    "JESTER (MERCHANT)":     180,
-    "RIN (MERCHANT)":        180,
-    "MYSTERIOUS MERCHANT":   180,
-    "TRAVELING MERCHANT":    180,
-    "MERCHANT":              180,
+    "MARI (MERCHANT)":     180,
+    "JESTER (MERCHANT)":   180,
+    "RIN (MERCHANT)":      180,
+    "MYSTERIOUS MERCHANT": 180,
+    "TRAVELING MERCHANT":  180,
+    "MERCHANT":            180,
 }
 
 # ============================================================
-#  8. HELPERS
+#  7. HELPERS
 # ============================================================
-def calculate_macro_capacity(event_name: str, avg_action_time: int = 40, buffer_time: int = 15) -> str | int:
+
+def calculate_macro_capacity(event_name: str, avg_action_time: int = 40, buffer_time: int = 15):
     total_seconds = EVENT_SESSION_LIMITS.get(event_name.upper())
     if total_seconds is None:
         return "Unknown"
@@ -105,18 +115,35 @@ def _fmt_duration(seconds: float) -> str:
     return f"{m}m {s}s"
 
 
+def _is_monitored_channel(channel: discord.TextChannel) -> bool:
+    if "webhook" in channel.name.lower():
+        return True
+    if channel.guild.id in AUTO_DETECT_CONTAINERS:
+        return True
+    if channel.category_id and channel.category_id in AUTO_DETECT_CONTAINERS:
+        return True
+    return False
+
+
+def _register_channel(channel: discord.TextChannel):
+    if _is_monitored_channel(channel):
+        if channel.id not in dynamic_detected_channels:
+            dynamic_detected_channels.add(channel.id)
+            logging.info(f"AUTO-DETECT: Registered #{channel.name} ({channel.id})")
+
+
 def load_persisted_metrics():
     global biome_counts, merchant_counts, webhook_activity
     if os.path.exists(DATA_STORE_PATH):
         try:
             with open(DATA_STORE_PATH, 'r', encoding='utf-8') as f:
                 stored = json.load(f)
-                biome_counts    = stored.get("biomes", {})
-                merchant_counts = stored.get("merchants", {})
+                biome_counts     = stored.get("biomes", {})
+                merchant_counts  = stored.get("merchants", {})
                 webhook_activity = stored.get("webhook_activity", {})
-            logging.info(f"💾 LOCAL ENGINE: Restored metrics from {DATA_STORE_PATH}")
+            logging.info(f"LOCAL ENGINE: Restored metrics from {DATA_STORE_PATH}")
         except Exception as e:
-            logging.error(f"⚠️ LOCAL ENGINE: Error reading cache: {e}")
+            logging.error(f"LOCAL ENGINE: Error reading cache: {e}")
 
 
 def save_persisted_metrics():
@@ -126,11 +153,15 @@ def save_persisted_metrics():
         return
     _last_save_time = now
     try:
-        payload = {"biomes": biome_counts, "merchants": merchant_counts, "webhook_activity": webhook_activity}
+        payload = {
+            "biomes":           biome_counts,
+            "merchants":        merchant_counts,
+            "webhook_activity": webhook_activity,
+        }
         with open(DATA_STORE_PATH, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False, indent=4)
     except Exception as e:
-        logging.error(f"⚠️ LOCAL ENGINE: Failed writing to disk: {e}")
+        logging.error(f"LOCAL ENGINE: Failed writing to disk: {e}")
 
 
 async def backup_state_to_discord_cloud():
@@ -153,26 +184,25 @@ async def backup_state_to_discord_cloud():
     if channel:
         try:
             payload = {
-                "biomes": biome_counts,
-                "merchants": merchant_counts,
-                "webhook_activity": webhook_activity,
+                "biomes":             biome_counts,
+                "merchants":          merchant_counts,
+                "webhook_activity":   webhook_activity,
                 "active_live_events": active_live_events,
             }
             temp_file = "cloud_backup.json"
             with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False)
-
             await channel.send(
-                content=f"🔄 **Telemetry Cloud Backup** | `{datetime.now(timezone.utc).isoformat()}`",
+                content=f"CLOUD BACKUP | `{datetime.now(timezone.utc).isoformat()}`",
                 file=discord.File(temp_file),
             )
-            logging.info("💾 CLOUD DATABASE: State synced to Discord storage channel.")
+            logging.info("CLOUD DATABASE: State synced.")
             try:
                 os.remove(temp_file)
-            except:
+            except Exception:
                 pass
         except Exception as e:
-            logging.error(f"⚠️ CLOUD DATABASE: Sync failed: {e}")
+            logging.error(f"CLOUD DATABASE: Sync failed: {e}")
 
 
 async def load_state_from_discord_cloud():
@@ -189,10 +219,10 @@ async def load_state_from_discord_cloud():
 
     if channel:
         try:
-            logging.info("⚡ CLOUD DATABASE: Scanning history for latest backup…")
-            async for message in channel.history(limit=25):
-                if message.attachments:
-                    for attachment in message.attachments:
+            logging.info("CLOUD DATABASE: Scanning history for latest backup...")
+            async for msg in channel.history(limit=25):
+                if msg.attachments:
+                    for attachment in msg.attachments:
                         if attachment.filename.endswith(".json"):
                             data_bytes = await attachment.read()
                             stored = json.loads(data_bytes.decode('utf-8'))
@@ -200,10 +230,10 @@ async def load_state_from_discord_cloud():
                             merchant_counts     = stored.get("merchants", {})
                             webhook_activity    = stored.get("webhook_activity", {})
                             active_live_events  = stored.get("active_live_events", {})
-                            logging.info("🎯 CLOUD DATABASE: Historical data restored from Discord Cloud Storage!")
+                            logging.info("CLOUD DATABASE: Historical data restored!")
                             return True
         except Exception as e:
-            logging.error(f"⚠️ CLOUD DATABASE: Recovery error: {e}")
+            logging.error(f"CLOUD DATABASE: Recovery error: {e}")
     return False
 
 
@@ -221,10 +251,10 @@ def get_metrics_payload():
         if delta_mins <= 10.0:
             active_webhooks_count += 1
             active_streams_list.append({
-                "channel_id":       cid,
-                "name":             data["name"],
+                "channel_id":         cid,
+                "name":               data["name"],
                 "last_seen_ago_mins": round(delta_mins, 2),
-                "accounts_count":   len(data.get("accounts", {})),
+                "accounts_count":     len(data.get("accounts", {})),
             })
 
     return {
@@ -237,14 +267,97 @@ def get_metrics_payload():
             "grand_total_merchants":     grand_total_merchants,
         },
         "counters": {"biomes": biome_counts, "merchants": merchant_counts},
-        "live_events":         list(active_live_events.values()),
+        "live_events":            list(active_live_events.values()),
         "active_webhook_streams": active_streams_list,
         "raw_webhook_registry":   webhook_activity,
     }
 
 
 # ============================================================
-#  9. WEB SERVER — HTML Dashboard + JSON API
+#  8. MERCHANT DEPARTURE WARNING SYSTEM
+# ============================================================
+
+async def send_merchant_departure_warning(event_key: str, ev: dict, seconds_left: int):
+    _departure_warned.add(event_key)
+
+    merchant_name    = ev["name"]
+    channel_name_str = ev.get("channel_name", "unknown")
+    account_id_str   = ev.get("account_identity", "Unknown")
+    spawn_link       = ev.get("link", "None")
+    macro_capacity   = calculate_macro_capacity(merchant_name)
+
+    dest_channel = None
+    if MERCHANT_DEPART_CHANNEL_ID:
+        dest_channel = bot.get_channel(int(MERCHANT_DEPART_CHANNEL_ID))
+    if not dest_channel:
+        for guild in bot.guilds:
+            for ch in guild.text_channels:
+                if ch.name == channel_name_str:
+                    dest_channel = ch
+                    break
+            if dest_channel:
+                break
+
+    embed = discord.Embed(
+        title=f"MERCHANT DEPARTING SOON — {merchant_name}",
+        description=(
+            f"**{merchant_name}** is leaving in approximately **{seconds_left} seconds!**\n\n"
+            f"**Zite Departure Protocol:**\n"
+            f"> **1.** Finish your **current interaction** — do NOT start a new one.\n"
+            f"> **2.** If you haven't acted yet, you have ~{seconds_left}s — move fast.\n"
+            f"> **3.** After the merchant leaves, **wait for the next spawn**. Do not chase.\n"
+            f"> **4.** Max safe capacity this session: **{macro_capacity} accounts** (40s cycle + 15s buffer).\n"
+            f"> **5.** Mark this channel **done** and shift your macro queue to the next active feed.\n\n"
+            f"*All merchants depart at exactly 3 minutes — no exceptions.*"
+        ),
+        color=0xFF6B00,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Merchant",        value=f"`{merchant_name}`",    inline=True)
+    embed.add_field(name="Channel",         value=f"`#{channel_name_str}`", inline=True)
+    embed.add_field(name="Account",         value=f"`{account_id_str}`",   inline=True)
+    embed.add_field(name="Time Remaining",  value=f"`~{seconds_left}s`",   inline=True)
+    embed.add_field(name="Safe Capacity",   value=f"`{macro_capacity} accounts`", inline=True)
+    if spawn_link and spawn_link != "None":
+        embed.add_field(name="Server Link", value=f"[Join Server]({spawn_link})", inline=True)
+    embed.set_footer(text="Zite Telemetry System  |  Merchant Departure Alert")
+
+    if dest_channel:
+        try:
+            await dest_channel.send(embed=embed)
+            logging.info(f"DEPARTURE WARNING sent to #{dest_channel.name} | {merchant_name} | ~{seconds_left}s left")
+        except Exception as e:
+            logging.error(f"Failed to send departure warning: {e}")
+    else:
+        logging.warning(f"DEPARTURE WARNING (no channel found) | {merchant_name} in #{channel_name_str} | ~{seconds_left}s left")
+
+
+@tasks.loop(seconds=5)
+async def merchant_departure_watchdog():
+    now = datetime.now(timezone.utc)
+    for event_key, ev in list(active_live_events.items()):
+        if ev.get("type") != "merchant":
+            continue
+        if event_key in _departure_warned:
+            continue
+
+        merchant_name = ev["name"]
+        session_limit = EVENT_SESSION_LIMITS.get(merchant_name.upper(), 180)
+        started_at    = datetime.fromisoformat(ev["started_at"])
+        elapsed_secs  = (now - started_at).total_seconds()
+        seconds_left  = session_limit - elapsed_secs
+
+        if seconds_left <= MERCHANT_WARN_BEFORE_S:
+            await send_merchant_departure_warning(event_key, ev, max(0, int(seconds_left)))
+
+
+@merchant_departure_watchdog.before_loop
+async def before_watchdog():
+    await bot.wait_until_ready()
+
+
+# ============================================================
+#  9. WEB SERVER
 # ============================================================
 class RenderHealthCheckHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
@@ -270,133 +383,70 @@ class RenderHealthCheckHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         data = get_metrics_payload()
-        html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <meta http-equiv="refresh" content="15">
-    <title>Telemetry Hub — Multi-Account Dashboard</title>
-    <style>
-        :root {{
-            --bg:      #070810;
-            --surface: #0f1117;
-            --card:    #161b27;
-            --border:  #1e2535;
-            --cyan:    #00e5ff;
-            --purple:  #a78bfa;
-            --amber:   #f59e0b;
-            --red:     #ff2a6d;
-            --green:   #00ffa3;
-            --muted:   #5a6a80;
-            --text:    #c5ccd8;
-        }}
-        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-        body {{ font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); padding: 28px; }}
-        .container {{ max-width: 1280px; margin: 0 auto; }}
-        header {{ display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 28px; }}
-        header h1 {{ font-size: 22px; color: var(--cyan); letter-spacing: .5px; }}
-        .badge-online {{ background: #0a2e1e; color: var(--green); border: 1px solid var(--green); padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; letter-spacing: 1px; }}
-        .stat-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px; }}
-        .stat-card {{ background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; border-top: 3px solid var(--cyan); }}
-        .stat-card.purple {{ border-top-color: var(--purple); }}
-        .stat-card.amber  {{ border-top-color: var(--amber); }}
-        .stat-card.red    {{ border-top-color: var(--red); }}
-        .stat-label {{ font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 8px; }}
-        .stat-val {{ font-size: 34px; font-weight: 800; color: #fff; }}
-        section {{ margin-bottom: 36px; }}
-        section h2 {{ font-size: 13px; text-transform: uppercase; letter-spacing: 2px; color: var(--muted); margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }}
-        .live-row {{ background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--red); border-radius: 8px; padding: 14px 18px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }}
-        .live-name {{ font-size: 16px; font-weight: 700; color: #fff; }}
-        .live-meta {{ font-size: 12px; color: var(--muted); margin-top: 4px; }}
-        .live-meta span {{ color: var(--cyan); }}
-        .pulse-badge {{ background: var(--red); color: #fff; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; animation: pulse 1.8s ease-in-out infinite; white-space: nowrap; }}
-        @keyframes pulse {{ 0%,100% {{ opacity:.55; }} 50% {{ opacity:1; }} }}
-        .webhook-block {{ background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; margin-bottom: 14px; }}
-        .webhook-title {{ font-size: 15px; font-weight: 700; color: var(--cyan); display: flex; justify-content: space-between; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }}
-        .account-row {{ background: var(--surface); border-left: 3px solid var(--purple); border-radius: 6px; padding: 12px 14px; margin-top: 8px; font-size: 13px; }}
-        .account-name {{ font-weight: 700; color: #fff; margin-bottom: 6px; }}
-        .session-tag {{ display: inline-block; background: #1a2035; border: 1px solid var(--border); color: var(--cyan); padding: 3px 8px; border-radius: 4px; font-size: 11px; margin: 2px; }}
-        .empty {{ color: var(--muted); font-style: italic; font-size: 13px; padding: 10px 0; }}
-    </style>
-</head>
-<body>
-<div class="container">
-    <header>
-        <h1>⚡ Multi-Account Telemetry Hub</h1>
-        <span class="badge-online">● ONLINE</span>
-    </header>
-    <div class="stat-grid">
-        <div class="stat-card purple">
-            <div class="stat-label">✨ Grand Total Biomes</div>
-            <div class="stat-val" style="color:var(--purple)">{data['telemetry']['grand_total_biomes']}</div>
-        </div>
-        <div class="stat-card amber">
-            <div class="stat-label">🛒 Grand Total Merchants</div>
-            <div class="stat-val" style="color:var(--amber)">{data['telemetry']['grand_total_merchants']}</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">📡 Total Channels</div>
-            <div class="stat-val">{data['telemetry']['total_registered_webhooks']}</div>
-        </div>
-        <div class="stat-card red">
-            <div class="stat-label">🔴 Active Webhooks (10 min)</div>
-            <div class="stat-val" style="color:var(--red)">{data['telemetry']['active_webhooks_last_10m']}</div>
-        </div>
-    </div>
-    <section>
-        <h2>🔴 Real-Time Active Sessions</h2>
-"""
-        if not data['live_events']:
-            html += '<p class="empty">No active macro instances detected right now.</p>'
+        html  = "<!DOCTYPE html>\n<html>\n<head>\n"
+        html += '    <meta charset="utf-8">\n'
+        html += '    <meta http-equiv="refresh" content="15">\n'
+        html += "    <title>Telemetry Hub</title>\n"
+        html += "    <style>\n"
+        html += "        :root { --bg:#070810; --surface:#0f1117; --card:#161b27; --border:#1e2535; --cyan:#00e5ff; --purple:#a78bfa; --amber:#f59e0b; --red:#ff2a6d; --green:#00ffa3; --muted:#5a6a80; --text:#c5ccd8; }\n"
+        html += "        * { box-sizing:border-box; margin:0; padding:0; }\n"
+        html += "        body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--text); padding:28px; }\n"
+        html += "        .container { max-width:1280px; margin:0 auto; }\n"
+        html += "        header { display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--border); padding-bottom:16px; margin-bottom:28px; }\n"
+        html += "        header h1 { font-size:22px; color:var(--cyan); }\n"
+        html += "        .badge { background:#0a2e1e; color:var(--green); border:1px solid var(--green); padding:4px 12px; border-radius:20px; font-size:12px; font-weight:700; }\n"
+        html += "        .stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:16px; margin-bottom:32px; }\n"
+        html += "        .stat-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:18px 20px; border-top:3px solid var(--cyan); }\n"
+        html += "        .stat-label { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--muted); margin-bottom:8px; }\n"
+        html += "        .stat-val { font-size:34px; font-weight:800; color:#fff; }\n"
+        html += "        section { margin-bottom:36px; }\n"
+        html += "        section h2 { font-size:13px; text-transform:uppercase; letter-spacing:2px; color:var(--muted); margin-bottom:14px; padding-bottom:8px; border-bottom:1px solid var(--border); }\n"
+        html += "        .live-row { background:var(--card); border:1px solid var(--border); border-left:3px solid var(--red); border-radius:8px; padding:14px 18px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; }\n"
+        html += "        .live-name { font-size:16px; font-weight:700; color:#fff; }\n"
+        html += "        .live-meta { font-size:12px; color:var(--muted); margin-top:4px; }\n"
+        html += "        .live-meta span { color:var(--cyan); }\n"
+        html += "        .pulse-badge { background:var(--red); color:#fff; padding:4px 10px; border-radius:20px; font-size:11px; font-weight:700; animation:pulse 1.8s ease-in-out infinite; white-space:nowrap; }\n"
+        html += "        @keyframes pulse { 0%,100% { opacity:.55; } 50% { opacity:1; } }\n"
+        html += "        .webhook-block { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:18px 20px; margin-bottom:14px; }\n"
+        html += "        .webhook-title { font-size:15px; font-weight:700; color:var(--cyan); display:flex; justify-content:space-between; margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--border); }\n"
+        html += "        .account-row { background:var(--surface); border-left:3px solid var(--purple); border-radius:6px; padding:12px 14px; margin-top:8px; font-size:13px; }\n"
+        html += "        .account-name { font-weight:700; color:#fff; margin-bottom:6px; }\n"
+        html += "        .session-tag { display:inline-block; background:#1a2035; border:1px solid var(--border); color:var(--cyan); padding:3px 8px; border-radius:4px; font-size:11px; margin:2px; }\n"
+        html += "        .empty { color:var(--muted); font-style:italic; font-size:13px; padding:10px 0; }\n"
+        html += "    </style>\n</head>\n<body>\n"
+        html += '<div class="container">\n'
+        html += f'    <header><h1>Multi-Account Telemetry Hub</h1><span class="badge">ONLINE</span></header>\n'
+        html += '    <div class="stat-grid">\n'
+        html += f'        <div class="stat-card" style="border-top-color:var(--purple)"><div class="stat-label">Grand Total Biomes</div><div class="stat-val" style="color:var(--purple)">{data["telemetry"]["grand_total_biomes"]}</div></div>\n'
+        html += f'        <div class="stat-card" style="border-top-color:var(--amber)"><div class="stat-label">Grand Total Merchants</div><div class="stat-val" style="color:var(--amber)">{data["telemetry"]["grand_total_merchants"]}</div></div>\n'
+        html += f'        <div class="stat-card"><div class="stat-label">Total Channels</div><div class="stat-val">{data["telemetry"]["total_registered_webhooks"]}</div></div>\n'
+        html += f'        <div class="stat-card" style="border-top-color:var(--red)"><div class="stat-label">Active Webhooks (10m)</div><div class="stat-val" style="color:var(--red)">{data["telemetry"]["active_webhooks_last_10m"]}</div></div>\n'
+        html += '    </div>\n'
+        html += '    <section><h2>Real-Time Active Sessions</h2>\n'
+        if not data["live_events"]:
+            html += '        <p class="empty">No active macro instances detected right now.</p>\n'
         else:
-            for ev in data['live_events']:
-                html += f"""
-        <div class="live-row">
-            <div>
-                <div class="live-name">{ev['name']} <small style="color:var(--muted);font-weight:400;">({ev['type'].upper()})</small></div>
-                <div class="live-meta">Channel: <span>#{ev['channel_name']}</span> &nbsp;|&nbsp; Account: <span>{ev.get('account_identity','Unknown')}</span></div>
-            </div>
-            <span class="pulse-badge">LIVE since {ev['started_at'][11:19]} UTC</span>
-        </div>"""
-
-        html += """
-    </section>
-    <section>
-        <h2>📡 Channel Macro Profiles & Session History</h2>
-"""
-        if not data['raw_webhook_registry']:
-            html += '<p class="empty">No channel stream history recorded yet.</p>'
+            for ev in data["live_events"]:
+                html += f'        <div class="live-row"><div><div class="live-name">{ev["name"]} <small style="color:var(--muted);font-weight:400;">({ev["type"].upper()})</small></div><div class="live-meta">Channel: <span>#{ev["channel_name"]}</span> &nbsp;|&nbsp; Account: <span>{ev.get("account_identity","Unknown")}</span></div></div><span class="pulse-badge">LIVE since {ev["started_at"][11:19]} UTC</span></div>\n'
+        html += '    </section>\n'
+        html += '    <section><h2>Channel Macro Profiles & Session History</h2>\n'
+        if not data["raw_webhook_registry"]:
+            html += '        <p class="empty">No channel stream history recorded yet.</p>\n'
         else:
-            for cid, reg in sorted(data['raw_webhook_registry'].items(), key=lambda x: x[1]['name']):
+            for cid, reg in sorted(data["raw_webhook_registry"].items(), key=lambda x: x[1]["name"]):
                 accounts = reg.get("accounts", {})
                 active_accounts = {k: v for k, v in accounts.items() if v.get("completed_sessions")}
-                html += f"""
-        <div class="webhook-block">
-            <div class="webhook-title">
-                <span>#{reg['name']} <small style="color:var(--muted);font-weight:400;">({reg['total_messages']} frames)</small></span>
-                <span style="font-size:12px;color:var(--muted);">Accounts with Activity: {len(active_accounts)}</span>
-            </div>"""
+                html += f'        <div class="webhook-block"><div class="webhook-title"><span>#{reg["name"]} <small style="color:var(--muted);font-weight:400;">({reg["total_messages"]} frames)</small></span><span style="font-size:12px;color:var(--muted);">Accounts: {len(active_accounts)}</span></div>\n'
                 if not active_accounts:
-                    html += '<p class="empty">Waiting for first event to complete…</p>'
+                    html += '            <p class="empty">Waiting for first event to complete...</p>\n'
                 else:
                     for l_key, acc in active_accounts.items():
-                        html += f"""
-            <div class="account-row">
-                <div class="account-name">{acc['display_name']} <small style="color:var(--muted);font-weight:400;font-size:11px;">({l_key[:28]}…)</small></div>
-                <div>"""
-                        history = acc.get("completed_sessions", [])
-                        for sess in reversed(history):
-                            html += f"<span class='session-tag'>{sess['name']}: {sess['duration']}</span>"
-                        html += """
-                </div>
-            </div>"""
-                html += "\n        </div>"
-
-        html += """
-    </section>
-</div>
-</body>
-</html>"""
+                        html += f'            <div class="account-row"><div class="account-name">{acc["display_name"]}</div><div>\n'
+                        for sess in reversed(acc.get("completed_sessions", [])):
+                            html += f'                <span class="session-tag">{sess["name"]}: {sess["duration"]}</span>\n'
+                        html += '            </div></div>\n'
+                html += '        </div>\n'
+        html += '    </section>\n</div>\n</body>\n</html>'
         self.wfile.write(html.encode('utf-8'))
 
     def log_message(self, format, *args):
@@ -413,24 +463,30 @@ def keep_alive():
 # ============================================================
 #  10. BOT EVENTS
 # ============================================================
+
 @bot.event
 async def on_ready():
     load_persisted_metrics()
     await load_state_from_discord_cloud()
     for guild in bot.guilds:
         for channel in guild.text_channels:
-            if guild.id in AUTO_DETECT_CONTAINERS or (channel.category_id in AUTO_DETECT_CONTAINERS):
-                dynamic_detected_channels.add(channel.id)
-    logging.info(f"📡 AUTO-DETECT: Cached {len(dynamic_detected_channels)} text channels.")
-    logging.info("✅ SYSTEM ONLINE — Discord Gateway connected. Tracking live. 🚀")
+            _register_channel(channel)
+    logging.info(f"AUTO-DETECT: Cached {len(dynamic_detected_channels)} monitored channels.")
+    logging.info("SYSTEM ONLINE — Discord Gateway connected.")
+    if not merchant_departure_watchdog.is_running():
+        merchant_departure_watchdog.start()
 
 
 @bot.event
 async def on_guild_channel_create(channel):
     if isinstance(channel, discord.TextChannel):
-        if channel.guild.id in AUTO_DETECT_CONTAINERS or (channel.category_id in AUTO_DETECT_CONTAINERS):
-            dynamic_detected_channels.add(channel.id)
-            logging.info(f"📡 AUTO-DETECT: New channel #{channel.name} ({channel.id}) added to live filters.")
+        _register_channel(channel)
+
+
+@bot.event
+async def on_guild_channel_update(before, after):
+    if isinstance(after, discord.TextChannel):
+        _register_channel(after)
 
 
 @bot.event
@@ -440,10 +496,14 @@ async def on_message(message):
 
     start_processing_time = time.perf_counter()
     channel_name = message.channel.name.lower()
+
     missing_channel_whitelist = {
         1511359721632694363, 1511365304624877568,
         1511335720239759361, 1511362877322432792,
     }
+
+    if "webhook" in channel_name and message.channel.id not in dynamic_detected_channels:
+        _register_channel(message.channel)
 
     is_monitored_channel = (
         message.channel.id in missing_channel_whitelist
@@ -453,9 +513,9 @@ async def on_message(message):
     if not is_monitored_channel:
         return
 
-    cid_str  = str(message.channel.id)
-    now_iso  = datetime.now(timezone.utc).isoformat()
-    is_forwarder = False
+    cid_str       = str(message.channel.id)
+    now_iso       = datetime.now(timezone.utc).isoformat()
+    is_forwarder  = False
     link_detection_vector = "None"
 
     combined_embed_text = message.content or ""
@@ -512,21 +572,21 @@ async def on_message(message):
 
     for embed in message.embeds:
         text_elements = []
-        if embed.title:                  text_elements.append(embed.title)
-        if embed.description:            text_elements.append(embed.description)
+        if embed.title:                        text_elements.append(embed.title)
+        if embed.description:                  text_elements.append(embed.description)
         if embed.author and embed.author.name: text_elements.append(embed.author.name)
         for field in embed.fields:
             if field.name:  text_elements.append(field.name)
             if field.value: text_elements.append(field.value)
 
-        combined_text     = " ".join(text_elements)
+        combined_text       = " ".join(text_elements)
         combined_text_lower = combined_text.lower()
 
         is_start = bool(EVENT_START_RE.search(combined_text_lower))
         is_end   = bool(EVENT_END_RE.search(combined_text_lower))
 
         if is_end:
-            print(f"DEBUG: END trigger detected → {combined_text_lower[:60]}")
+            print(f"DEBUG: END trigger -> {combined_text_lower[:60]}")
 
         if not is_start and not is_end:
             continue
@@ -535,11 +595,12 @@ async def on_message(message):
 
         is_merchant_event = (
             "merchant" in combined_text_lower
-            or "mari"  in combined_text_lower
+            or "mari"   in combined_text_lower
             or "jester" in combined_text_lower
-            or "rin"   in combined_text_lower
+            or "rin"    in combined_text_lower
         )
 
+        # ── MERCHANT BRANCH ──────────────────────────────────────────────
         if is_merchant_event:
             if   "mysterious" in combined_text_lower: merchant_name = "MYSTERIOUS MERCHANT"
             elif "traveling"  in combined_text_lower: merchant_name = "TRAVELING MERCHANT"
@@ -548,10 +609,10 @@ async def on_message(message):
             elif "rin"        in combined_text_lower: merchant_name = "RIN (MERCHANT)"
             else:                                     merchant_name = "MERCHANT"
 
-            event_type   = "SPAWNED" if is_start else "DESPAWNED"
-            event_key    = f"{cid_str}_{account_identity}_{merchant_name}"
-            duration_str = "N/A"
-            target_key   = event_key
+            event_type        = "SPAWNED" if is_start else "DESPAWNED"
+            event_key         = f"{cid_str}_{account_identity}_{merchant_name}"
+            duration_str      = "N/A"
+            target_key        = event_key
             found_start_event = None
 
             if event_key in active_live_events:
@@ -559,7 +620,7 @@ async def on_message(message):
             else:
                 for k, ev in list(active_live_events.items()):
                     if k.startswith(f"{cid_str}_") and ev["name"] == merchant_name:
-                        target_key   = k
+                        target_key        = k
                         found_start_event = ev
                         account_identity  = ev["account_identity"]
                         if ev["link"] != "None":
@@ -579,17 +640,19 @@ async def on_message(message):
                     "account_identity": account_identity,
                     "link":             roblox_link or "None",
                 }
+                _departure_warned.discard(event_key)
+
             else:
                 if found_start_event:
                     start_dt     = datetime.fromisoformat(found_start_event["started_at"])
                     delta_secs   = (datetime.now(timezone.utc) - start_dt).total_seconds()
                     duration_str = _fmt_duration(delta_secs)
                     active_live_events.pop(target_key, None)
+                    _departure_warned.discard(target_key)
 
                     link_key = roblox_link or found_start_event.get("link")
                     if (not is_forwarder
-                            and link_key
-                            and link_key != "None"
+                            and link_key and link_key != "None"
                             and cid_str in webhook_activity
                             and link_key in webhook_activity[cid_str]["accounts"]):
                         webhook_activity[cid_str]["accounts"][link_key]["completed_sessions"].append({
@@ -600,25 +663,23 @@ async def on_message(message):
                 else:
                     duration_str = "N/A (Start missed)"
 
-            asyncio.get_event_loop().call_soon(
-                lambda: asyncio.ensure_future(asyncio.to_thread(save_persisted_metrics))
-            )
+            asyncio.ensure_future(asyncio.to_thread(save_persisted_metrics))
             asyncio.ensure_future(backup_state_to_discord_cloud())
 
             metrics        = get_metrics_payload()
             exec_ms        = (time.perf_counter() - start_processing_time) * 1000
             macro_capacity = calculate_macro_capacity(merchant_name)
-            status_icon    = "🟢" if is_start else "🔴"
+            status_icon    = "SPAWNED" if is_start else "DESPAWNED"
 
-            print(f"\n🛒 [MERCHANT] {event_type} {status_icon}  | {merchant_name}  |  {account_identity}")
-            print(f"   ↳ Channel : #{message.channel.name}  ({guild_name})")
+            print(f"\n[MERCHANT] {status_icon} | {merchant_name} | {account_identity}")
+            print(f"   Channel : #{message.channel.name}  ({guild_name})")
             if roblox_link:
-                print(f"   ↳ Link    : {roblox_link}  [{link_detection_vector}]")
-            print(f"   ↳ Capacity: {macro_capacity} accounts  (40s macro + 15s buffer)")
-            print(f"   ↳ Duration: {duration_str}  |  ⚡ {exec_ms:.1f}ms  |  "
-                  f"Active: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
-            print("─" * 80)
+                print(f"   Link    : {roblox_link}  [{link_detection_vector}]")
+            print(f"   Capacity: {macro_capacity} accounts  (40s macro + 15s buffer)")
+            print(f"   Duration: {duration_str}  | {exec_ms:.1f}ms | Active: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
+            print("-" * 80)
 
+        # ── BIOME BRANCH ─────────────────────────────────────────────────
         else:
             biome_match = BIOME_MATCH_RE.search(combined_text)
             if biome_match:
@@ -630,19 +691,20 @@ async def on_message(message):
                 else:
                     words          = CLEAN_WORDS_RE.findall(combined_text)
                     filtered_words = [w for w in words if w not in {
-                        "START","STARTED","ENDED","BIOME","TIME","INVITE","SERVER","PRIVATE","LINK", "WARNING"
+                        "START","STARTED","ENDED","BIOME","TIME","INVITE",
+                        "SERVER","PRIVATE","LINK","WARNING",
                     }]
                     biome_name = filtered_words[0] if filtered_words else "UNKNOWN BIOME"
 
             if biome_name == "SAND":
                 biome_name = "SAND STORM"
-            if biome_name == "UNKNOWN BIOME" or biome_name == "UNKNOWN":
+            if biome_name in ("UNKNOWN BIOME", "UNKNOWN"):
                 biome_name = "NORMAL"
 
-            event_type   = "STARTED" if is_start else "ENDED"
-            event_key    = f"{cid_str}_{account_identity}_{biome_name}"
-            duration_str = "N/A"
-            target_key   = event_key
+            event_type        = "STARTED" if is_start else "ENDED"
+            event_key         = f"{cid_str}_{account_identity}_{biome_name}"
+            duration_str      = "N/A"
+            target_key        = event_key
             found_start_event = None
 
             if event_key in active_live_events:
@@ -650,7 +712,7 @@ async def on_message(message):
             else:
                 for k, ev in list(active_live_events.items()):
                     if k.startswith(f"{cid_str}_") and ev["name"] == biome_name:
-                        target_key   = k
+                        target_key        = k
                         found_start_event = ev
                         account_identity  = ev["account_identity"]
                         if ev["link"] != "None":
@@ -679,8 +741,7 @@ async def on_message(message):
 
                     link_key = roblox_link or found_start_event.get("link")
                     if (not is_forwarder
-                            and link_key
-                            and link_key != "None"
+                            and link_key and link_key != "None"
                             and cid_str in webhook_activity
                             and link_key in webhook_activity[cid_str]["accounts"]):
                         acct_sessions = webhook_activity[cid_str]["accounts"][link_key]["completed_sessions"]
@@ -694,24 +755,21 @@ async def on_message(message):
                 else:
                     duration_str = "N/A (Start missed)"
 
-            asyncio.get_event_loop().call_soon(
-                lambda: asyncio.ensure_future(asyncio.to_thread(save_persisted_metrics))
-            )
+            asyncio.ensure_future(asyncio.to_thread(save_persisted_metrics))
             asyncio.ensure_future(backup_state_to_discord_cloud())
 
             metrics        = get_metrics_payload()
             exec_ms        = (time.perf_counter() - start_processing_time) * 1000
             macro_capacity = calculate_macro_capacity(biome_name)
-            status_icon    = "🟢" if is_start else "🔴"
+            status_icon    = "STARTED" if is_start else "ENDED"
 
-            print(f"\n🔮 [BIOME] {event_type} {status_icon}  | {biome_name}  |  {account_identity}")
-            print(f"   ↳ Channel : #{message.channel.name}  ({guild_name})")
+            print(f"\n[BIOME] {status_icon} | {biome_name} | {account_identity}")
+            print(f"   Channel : #{message.channel.name}  ({guild_name})")
             if roblox_link:
-                print(f"   ↳ Link    : {roblox_link}  [{link_detection_vector}]")
-            print(f"   ↳ Capacity: {macro_capacity} accounts  (40s macro + 15s buffer)")
-            print(f"   ↳ Duration: {duration_str}  |  ⚡ {exec_ms:.1f}ms  |  "
-                  f"Active: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
-            print("─" * 80)
+                print(f"   Link    : {roblox_link}  [{link_detection_vector}]")
+            print(f"   Capacity: {macro_capacity} accounts  (40s macro + 15s buffer)")
+            print(f"   Duration: {duration_str}  | {exec_ms:.1f}ms | Active: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
+            print("-" * 80)
 
 
 # ============================================================
@@ -723,4 +781,4 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 if TOKEN:
     bot.run(TOKEN)
 else:
-    print("❌ Error: DISCORD_TOKEN environment variable not set.")
+    print("Error: DISCORD_TOKEN environment variable not set.")
