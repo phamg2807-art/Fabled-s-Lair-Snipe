@@ -32,8 +32,14 @@ import json
 import asyncio
 import time
 import platform
-import psutil
 from datetime import datetime, timezone, timedelta
+
+# ── psutil is optional — graceful fallback if not installed ───────────────────
+try:
+    import psutil
+    _PSUTIL = True
+except ImportError:
+    _PSUTIL = False
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,6 +72,7 @@ dynamic_detected_channels: set = set()
 EXTENDED_LOG_CHANNEL_ID  = 1512287503141306570   # website-output  (plain auto text)
 CMD_CHANNEL_ID           = 1512289164786401500   # website-cmds    (bot commands)
 EMBED_OUTPUT_CHANNEL_ID  = 1512290157179703426   # embed-output    (rich embeds)
+WELCOME_CHANNEL_ID       = 1512300518695895120   # server-output   (new member welcomes)
 
 MERCHANT_DEPART_CHANNEL_ID = os.getenv("MERCHANT_DEPART_CHANNEL_ID")
 MERCHANT_WARN_BEFORE_S     = 30
@@ -227,6 +234,17 @@ def _active_webhook_count() -> int:
         1 for d in webhook_activity.values()
         if (now - datetime.fromisoformat(d["last_seen"])).total_seconds() / 60 <= 10
     )
+
+def _get_sys_stats():
+    """Return (mem_mb, cpu_pct) — both 0.0 if psutil not available."""
+    if _PSUTIL:
+        try:
+            mem = psutil.Process().memory_info().rss / 1024 / 1024
+            cpu = psutil.cpu_percent(interval=0.2)
+            return mem, cpu
+        except Exception:
+            pass
+    return 0.0, 0.0
 
 # ── 8. Persistence ────────────────────────────────────────────────────────────
 
@@ -535,8 +553,7 @@ def _build_plain_to_rich_embed(message: discord.Message) -> discord.Embed:
     else:
         color, icon, label = 0x00E5FF, "📋", "LOG"
 
-    # Try to split into lines for field display
-    lines = [l.strip() for l in content.strip().splitlines() if l.strip()]
+    lines      = [l.strip() for l in content.strip().splitlines() if l.strip()]
     title_line = lines[0][:200] if lines else "Log Entry"
     body       = "\n".join(lines[1:])[:1000] if len(lines) > 1 else ""
 
@@ -608,7 +625,6 @@ async def maybe_auto_pin_error(message: discord.Message):
         try:
             await message.pin()
             log.info(f"AUTO-PIN: Pinned error message {message.id} in #{message.channel.name}")
-            # Notify embed-output
             embed_ch = _get_embed_output_channel()
             if embed_ch:
                 e = discord.Embed(
@@ -1001,21 +1017,19 @@ def _cmd_guard(ctx):
 async def cmd_uptime(ctx):
     """Show bot + Render uptime."""
     if not _cmd_guard(ctx): return
-    delta   = datetime.now(timezone.utc) - BOT_START_TIME
-    uptime  = _fmt_uptime(BOT_START_TIME)
-    try:
-        mem  = psutil.Process().memory_info().rss / 1024 / 1024
-        cpu  = psutil.cpu_percent(interval=0.2)
-    except Exception:
-        mem = cpu = 0
+    uptime      = _fmt_uptime(BOT_START_TIME)
+    mem, cpu    = _get_sys_stats()
     embed = discord.Embed(title="⏱️  Bot & Render Uptime", color=0x00E5FF,
                           timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="🟢 Uptime",         value=f"`{uptime}`",             inline=True)
-    embed.add_field(name="🚀 Started At",     value=f"`{BOT_START_TIME.strftime('%Y-%m-%d %H:%M:%S UTC')}`", inline=True)
-    embed.add_field(name="💾 Memory Usage",   value=f"`{mem:.1f} MB`",          inline=True)
-    embed.add_field(name="⚙️ CPU",            value=f"`{cpu:.1f}%`",            inline=True)
-    embed.add_field(name="🐍 Python",         value=f"`{platform.python_version()}`", inline=True)
-    embed.add_field(name="📦 discord.py",     value=f"`{discord.__version__}`", inline=True)
+    embed.add_field(name="🟢 Uptime",     value=f"`{uptime}`",             inline=True)
+    embed.add_field(name="🚀 Started At", value=f"`{BOT_START_TIME.strftime('%Y-%m-%d %H:%M:%S UTC')}`", inline=True)
+    if _PSUTIL:
+        embed.add_field(name="💾 Memory Usage", value=f"`{mem:.1f} MB`", inline=True)
+        embed.add_field(name="⚙️ CPU",          value=f"`{cpu:.1f}%`",   inline=True)
+    else:
+        embed.add_field(name="💾 Memory / CPU", value="`psutil not installed`", inline=True)
+    embed.add_field(name="🐍 Python",     value=f"`{platform.python_version()}`", inline=True)
+    embed.add_field(name="📦 discord.py", value=f"`{discord.__version__}`",       inline=True)
     embed.set_footer(text=_zite_footer("System"))
     await ctx.send(embed=embed)
 
@@ -1023,24 +1037,20 @@ async def cmd_uptime(ctx):
 async def cmd_status(ctx):
     """Full system status snapshot."""
     if not _cmd_guard(ctx): return
-    m   = get_metrics_payload()
-    t   = m["telemetry"]
-    try:
-        mem = psutil.Process().memory_info().rss / 1024 / 1024
-        cpu = psutil.cpu_percent(interval=0.2)
-    except Exception:
-        mem = cpu = 0
+    m        = get_metrics_payload()
+    t        = m["telemetry"]
+    mem, cpu = _get_sys_stats()
     embed = discord.Embed(title="📊  System Status", color=0x00FFA3,
                           timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="🟢 Status",             value="`ONLINE`",                             inline=True)
-    embed.add_field(name="⏱️ Uptime",             value=f"`{m['uptime']}`",                     inline=True)
-    embed.add_field(name="💾 RAM",                value=f"`{mem:.1f} MB`",                      inline=True)
-    embed.add_field(name="📡 Total Channels",     value=f"`{t['total_registered_webhooks']}`",  inline=True)
-    embed.add_field(name="🔴 Active (10m)",       value=f"`{t['active_webhooks_last_10m']}`",   inline=True)
-    embed.add_field(name="🔎 Detected Channels",  value=f"`{t['total_detected_channels']}`",    inline=True)
-    embed.add_field(name="🌍 Total Biomes",       value=f"`{t['grand_total_biomes']}`",         inline=True)
-    embed.add_field(name="🏪 Total Merchants",    value=f"`{t['grand_total_merchants']}`",       inline=True)
-    embed.add_field(name="⚡ Live Events",        value=f"`{t['active_live_events']}`",          inline=True)
+    embed.add_field(name="🟢 Status",            value="`ONLINE`",                             inline=True)
+    embed.add_field(name="⏱️ Uptime",            value=f"`{m['uptime']}`",                     inline=True)
+    embed.add_field(name="💾 RAM",               value=f"`{mem:.1f} MB`" if _PSUTIL else "`N/A`", inline=True)
+    embed.add_field(name="📡 Total Channels",    value=f"`{t['total_registered_webhooks']}`",  inline=True)
+    embed.add_field(name="🔴 Active (10m)",      value=f"`{t['active_webhooks_last_10m']}`",   inline=True)
+    embed.add_field(name="🔎 Detected Channels", value=f"`{t['total_detected_channels']}`",    inline=True)
+    embed.add_field(name="🌍 Total Biomes",      value=f"`{t['grand_total_biomes']}`",         inline=True)
+    embed.add_field(name="🏪 Total Merchants",   value=f"`{t['grand_total_merchants']}`",      inline=True)
+    embed.add_field(name="⚡ Live Events",       value=f"`{t['active_live_events']}`",         inline=True)
     embed.set_footer(text=_zite_footer("System Status"))
     await ctx.send(embed=embed)
 
@@ -1084,7 +1094,6 @@ async def cmd_webhook_list(ctx):
         delta_m = (now - datetime.fromisoformat(d["last_seen"])).total_seconds() / 60
         status  = "🟢" if delta_m <= 10 else "🔴"
         lines.append(f"{status} `#{d['name']}` — {len(d.get('accounts',{}))} accs — seen {delta_m:.1f}m ago")
-    # paginate if needed (Discord limit ~4096 chars)
     chunks = []
     chunk  = []
     for l in lines:
@@ -1124,7 +1133,6 @@ async def cmd_webhook_info(ctx, *, channel_name: str):
     embed.add_field(name="Status",           value="`🟢 Active`" if delta_m <= 10 else "`🔴 Idle`", inline=True)
     embed.add_field(name="Accounts Tracked", value=f"`{len(accounts)}`",      inline=True)
     embed.add_field(name="Total Sessions",   value=f"`{total_ses}`",          inline=True)
-    # List each account
     for lk, acc in list(accounts.items())[:8]:
         sessions_preview = ", ".join(
             f"{s['name']}({s['duration']})" for s in acc.get("completed_sessions", [])[-3:]
@@ -1171,11 +1179,11 @@ async def cmd_channels(ctx):
     if not _cmd_guard(ctx): return
     embed = discord.Embed(title="🔎  Detected Channels Overview", color=0x00FFA3,
                           timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="🔎 Auto-Detected",      value=f"`{len(dynamic_detected_channels)}`",  inline=True)
-    embed.add_field(name="📋 Whitelist (static)",  value=f"`{len(MISSING_CHANNEL_WHITELIST)}`",  inline=True)
-    embed.add_field(name="📦 Container Guilds",    value=f"`{len(AUTO_DETECT_CONTAINERS)}`",     inline=True)
-    embed.add_field(name="📡 Webhook Registry",    value=f"`{len(webhook_activity)}`",           inline=True)
-    embed.add_field(name="🔴 Active (10m)",        value=f"`{_active_webhook_count()}`",         inline=True)
+    embed.add_field(name="🔎 Auto-Detected",     value=f"`{len(dynamic_detected_channels)}`", inline=True)
+    embed.add_field(name="📋 Whitelist (static)", value=f"`{len(MISSING_CHANNEL_WHITELIST)}`", inline=True)
+    embed.add_field(name="📦 Container Guilds",  value=f"`{len(AUTO_DETECT_CONTAINERS)}`",    inline=True)
+    embed.add_field(name="📡 Webhook Registry",  value=f"`{len(webhook_activity)}`",          inline=True)
+    embed.add_field(name="🔴 Active (10m)",      value=f"`{_active_webhook_count()}`",        inline=True)
     embed.set_footer(text=_zite_footer("Channel Overview"))
     await ctx.send(embed=embed)
 
@@ -1203,23 +1211,23 @@ async def cmd_channel_info(ctx, channel: discord.TextChannel = None):
     ch = channel or ctx.channel
     cid_str = str(ch.id)
     wh_data = webhook_activity.get(cid_str)
-    in_detected   = ch.id in dynamic_detected_channels
-    in_whitelist  = ch.id in MISSING_CHANNEL_WHITELIST
-    in_container  = ch.guild.id in AUTO_DETECT_CONTAINERS
+    in_detected  = ch.id in dynamic_detected_channels
+    in_whitelist = ch.id in MISSING_CHANNEL_WHITELIST
+    in_container = ch.guild.id in AUTO_DETECT_CONTAINERS
     embed = discord.Embed(title=f"📡  Channel Info — #{ch.name}", color=0x00E5FF,
                           timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="Channel ID",      value=f"`{ch.id}`",            inline=True)
-    embed.add_field(name="Category",        value=f"`{ch.category}`",      inline=True)
-    embed.add_field(name="Guild",           value=f"`{ch.guild.name}`",    inline=True)
-    embed.add_field(name="Auto-Detected",   value="✅" if in_detected else "❌", inline=True)
+    embed.add_field(name="Channel ID",      value=f"`{ch.id}`",         inline=True)
+    embed.add_field(name="Category",        value=f"`{ch.category}`",   inline=True)
+    embed.add_field(name="Guild",           value=f"`{ch.guild.name}`", inline=True)
+    embed.add_field(name="Auto-Detected",   value="✅" if in_detected else "❌",  inline=True)
     embed.add_field(name="Whitelisted",     value="✅" if in_whitelist else "❌", inline=True)
     embed.add_field(name="Container Guild", value="✅" if in_container else "❌", inline=True)
     if wh_data:
-        now      = datetime.now(timezone.utc)
-        delta_m  = (now - datetime.fromisoformat(wh_data["last_seen"])).total_seconds() / 60
-        embed.add_field(name="Total Frames",   value=f"`{wh_data['total_messages']}`", inline=True)
-        embed.add_field(name="Last Seen",      value=f"`{delta_m:.1f}m ago`",          inline=True)
-        embed.add_field(name="Accounts",       value=f"`{len(wh_data.get('accounts',{}))}`", inline=True)
+        now     = datetime.now(timezone.utc)
+        delta_m = (now - datetime.fromisoformat(wh_data["last_seen"])).total_seconds() / 60
+        embed.add_field(name="Total Frames", value=f"`{wh_data['total_messages']}`",     inline=True)
+        embed.add_field(name="Last Seen",    value=f"`{delta_m:.1f}m ago`",              inline=True)
+        embed.add_field(name="Accounts",     value=f"`{len(wh_data.get('accounts',{}))}`", inline=True)
     embed.set_footer(text=_zite_footer("Channel Info"))
     await ctx.send(embed=embed)
 
@@ -1237,9 +1245,9 @@ async def cmd_config(ctx):
     embed.add_field(name="📋 Static Whitelist Channel IDs",
                     value="\n".join(f"`{x}`" for x in MISSING_CHANNEL_WHITELIST) or "None",
                     inline=False)
-    embed.add_field(name="⏱️ Save Interval",    value=f"`{SAVE_INTERVAL_S}s`",       inline=True)
-    embed.add_field(name="☁️ Backup Interval",  value=f"`{BACKUP_INTERVAL_S}s`",     inline=True)
-    embed.add_field(name="⚠️ Depart Warn",      value=f"`{MERCHANT_WARN_BEFORE_S}s`",inline=True)
+    embed.add_field(name="⏱️ Save Interval",    value=f"`{SAVE_INTERVAL_S}s`",        inline=True)
+    embed.add_field(name="☁️ Backup Interval",  value=f"`{BACKUP_INTERVAL_S}s`",      inline=True)
+    embed.add_field(name="⚠️ Depart Warn",      value=f"`{MERCHANT_WARN_BEFORE_S}s`", inline=True)
     embed.add_field(name="🔎 Detected Channels",value=f"`{len(dynamic_detected_channels)}`", inline=True)
     embed.set_footer(text=_zite_footer("Config"))
     await ctx.send(embed=embed)
@@ -1356,15 +1364,15 @@ async def cmd_biomes(ctx):
 async def cmd_biome_info(ctx, *, name: str):
     """Detailed info about a biome: !biomeinfo SINGULARITY"""
     if not _cmd_guard(ctx): return
-    bname  = name.upper()
-    limit  = EVENT_SESSION_LIMITS.get(bname)
-    tip    = BIOME_TIPS.get(bname, "No tactical data available.")
-    emoji  = BIOME_EMOJIS.get(bname, "❓")
-    color  = BIOME_COLORS.get(bname, 0x778899)
-    cap    = calculate_macro_capacity(bname)
-    count  = biome_counts.get(bname, 0)
-    embed  = discord.Embed(title=f"{emoji}  Biome Info — {bname}", color=color,
-                           timestamp=datetime.now(timezone.utc))
+    bname = name.upper()
+    limit = EVENT_SESSION_LIMITS.get(bname)
+    tip   = BIOME_TIPS.get(bname, "No tactical data available.")
+    emoji = BIOME_EMOJIS.get(bname, "❓")
+    color = BIOME_COLORS.get(bname, 0x778899)
+    cap   = calculate_macro_capacity(bname)
+    count = biome_counts.get(bname, 0)
+    embed = discord.Embed(title=f"{emoji}  Biome Info — {bname}", color=color,
+                          timestamp=datetime.now(timezone.utc))
     embed.add_field(name="⏱️ Session Limit", value=f"`{_fmt_duration(limit)}`" if limit else "`Unknown`", inline=True)
     embed.add_field(name="🧮 Macro Capacity",value=f"`{cap} accs`", inline=True)
     embed.add_field(name="📊 Total Seen",    value=f"`{count}`",    inline=True)
@@ -1421,7 +1429,6 @@ async def cmd_merchants(ctx):
 async def cmd_merchant_info(ctx, *, name: str):
     """Detailed info about a merchant: !merchantinfo MARI"""
     if not _cmd_guard(ctx): return
-    # fuzzy match
     upper = name.upper()
     mname = None
     for key in MERCHANT_TIPS:
@@ -1508,15 +1515,15 @@ async def cmd_metrics(ctx):
     t = m["telemetry"]
     embed = discord.Embed(title="📈  Full Metrics Snapshot", color=0x00E5FF,
                           timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="🟢 Status",           value=f"`{m['status']}`",                  inline=True)
-    embed.add_field(name="⏱️ Uptime",           value=f"`{m['uptime']}`",                  inline=True)
-    embed.add_field(name="🕐 Timestamp",        value=f"`{m['timestamp'][11:19]} UTC`",     inline=True)
-    embed.add_field(name="📡 Total Channels",   value=f"`{t['total_registered_webhooks']}`",inline=True)
-    embed.add_field(name="🔴 Active (10m)",     value=f"`{t['active_webhooks_last_10m']}`", inline=True)
-    embed.add_field(name="🔎 Detected",         value=f"`{t['total_detected_channels']}`",  inline=True)
-    embed.add_field(name="🌍 Total Biomes",     value=f"`{t['grand_total_biomes']}`",        inline=True)
-    embed.add_field(name="🏪 Total Merchants",  value=f"`{t['grand_total_merchants']}`",     inline=True)
-    embed.add_field(name="⚡ Live Events",      value=f"`{t['active_live_events']}`",        inline=True)
+    embed.add_field(name="🟢 Status",          value=f"`{m['status']}`",                   inline=True)
+    embed.add_field(name="⏱️ Uptime",          value=f"`{m['uptime']}`",                   inline=True)
+    embed.add_field(name="🕐 Timestamp",       value=f"`{m['timestamp'][11:19]} UTC`",      inline=True)
+    embed.add_field(name="📡 Total Channels",  value=f"`{t['total_registered_webhooks']}`", inline=True)
+    embed.add_field(name="🔴 Active (10m)",    value=f"`{t['active_webhooks_last_10m']}`",  inline=True)
+    embed.add_field(name="🔎 Detected",        value=f"`{t['total_detected_channels']}`",   inline=True)
+    embed.add_field(name="🌍 Total Biomes",    value=f"`{t['grand_total_biomes']}`",         inline=True)
+    embed.add_field(name="🏪 Total Merchants", value=f"`{t['grand_total_merchants']}`",      inline=True)
+    embed.add_field(name="⚡ Live Events",     value=f"`{t['active_live_events']}`",         inline=True)
     embed.add_field(name="📊 Biome Breakdown",
                     value="\n".join(f"`{k}`: {v}" for k, v in sorted(
                         biome_counts.items(), key=lambda x: -x[1])[:8]) or "None",
@@ -1536,10 +1543,7 @@ async def cmd_metrics_raw(ctx):
     tmp     = "metrics_export.json"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    await ctx.send(
-        content="📦 Raw metrics export:",
-        file=discord.File(tmp),
-    )
+    await ctx.send(content="📦 Raw metrics export:", file=discord.File(tmp))
     try: os.remove(tmp)
     except: pass
 
@@ -1550,10 +1554,10 @@ async def cmd_website(ctx):
     render_url = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:10000")
     embed      = discord.Embed(title="🌐  Website & API Info", color=0x00E5FF,
                                timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="🖥️ Dashboard",  value=f"`{render_url}/`",           inline=False)
-    embed.add_field(name="📡 API",        value=f"`{render_url}/api/metrics`", inline=False)
-    embed.add_field(name="⏱️ Uptime",    value=f"`{_fmt_uptime(BOT_START_TIME)}`", inline=True)
-    embed.add_field(name="🔄 Refresh",   value="`Every 15s (auto)`",           inline=True)
+    embed.add_field(name="🖥️ Dashboard", value=f"`{render_url}/`",           inline=False)
+    embed.add_field(name="📡 API",       value=f"`{render_url}/api/metrics`", inline=False)
+    embed.add_field(name="⏱️ Uptime",   value=f"`{_fmt_uptime(BOT_START_TIME)}`", inline=True)
+    embed.add_field(name="🔄 Refresh",  value="`Every 15s (auto)`",           inline=True)
     embed.set_footer(text=_zite_footer("Website"))
     await ctx.send(embed=embed)
 
@@ -1564,7 +1568,7 @@ async def cmd_backup(ctx):
     """Force a cloud backup right now."""
     if not _cmd_guard(ctx): return
     global _last_backup_time
-    _last_backup_time = 0.0   # reset throttle
+    _last_backup_time = 0.0
     await backup_state_to_discord_cloud()
     embed = discord.Embed(title="☁️  Cloud Backup Triggered",
                           description="State has been uploaded to `telemetry-state-db`.",
@@ -1627,9 +1631,9 @@ async def cmd_capacity(ctx, *, event_name: str):
     embed   = discord.Embed(title=f"{emoji}  Capacity — {name_up}", color=color,
                             timestamp=datetime.now(timezone.utc))
     embed.add_field(name="⏱️ Session Limit", value=f"`{_fmt_duration(limit)}`" if limit else "`Unknown`", inline=True)
-    embed.add_field(name="🧮 30s cycle",     value=f"`{cap_30} accounts`",   inline=True)
-    embed.add_field(name="🧮 40s cycle",     value=f"`{cap_40} accounts`",   inline=True)
-    embed.add_field(name="🧮 60s cycle",     value=f"`{cap_60} accounts`",   inline=True)
+    embed.add_field(name="🧮 30s cycle",     value=f"`{cap_30} accounts`", inline=True)
+    embed.add_field(name="🧮 40s cycle",     value=f"`{cap_40} accounts`", inline=True)
+    embed.add_field(name="🧮 60s cycle",     value=f"`{cap_60} accounts`", inline=True)
     embed.set_footer(text=_zite_footer("Capacity Calculator"))
     await ctx.send(embed=embed)
 
@@ -1640,13 +1644,11 @@ async def cmd_session_limits(ctx):
     biome_lines    = []
     merchant_lines = []
     for name, sec in sorted(EVENT_SESSION_LIMITS.items(), key=lambda x: -x[1]):
-        is_m = any(k in name for k in ("MERCHANT","MARI","JESTER","RIN"))
+        is_m  = any(k in name for k in ("MERCHANT","MARI","JESTER","RIN"))
         emoji = MERCHANT_EMOJIS.get(name,"🏪") if is_m else BIOME_EMOJIS.get(name,"❓")
         line  = f"{emoji} **{name}**: `{_fmt_duration(sec)}`  *(cap: {calculate_macro_capacity(name)} accs)*"
-        if is_m:
-            merchant_lines.append(line)
-        else:
-            biome_lines.append(line)
+        if is_m: merchant_lines.append(line)
+        else:    biome_lines.append(line)
     embed = discord.Embed(title="⏱️  Session Time Limits", color=0xA78BFA,
                           timestamp=datetime.now(timezone.utc))
     embed.add_field(name="🌍 Biomes",    value="\n".join(biome_lines)    or "None", inline=False)
@@ -1692,8 +1694,8 @@ async def cmd_guilds(ctx):
 async def cmd_pinned(ctx, channel: discord.TextChannel = None):
     """List pinned messages in a channel: !pinned #channel"""
     if not _cmd_guard(ctx): return
-    ch      = channel or ctx.channel
-    pins    = await ch.pins()
+    ch   = channel or ctx.channel
+    pins = await ch.pins()
     if not pins:
         await ctx.send(embed=discord.Embed(description=f"No pinned messages in <#{ch.id}>.", color=0x36393F))
         return
@@ -1715,51 +1717,89 @@ async def cmd_help(ctx):
     if not _cmd_guard(ctx): return
     embed = discord.Embed(
         title="📖  Zite Telemetry Bot — Command Reference",
-        description=f"All commands must be used in <#{CMD_CHANNEL_ID}>.\nPrefix: `!`",
+        description=(
+            f"All commands must be used in <#{CMD_CHANNEL_ID}>.\n"
+            f"**Prefix:** `!`\n\n"
+            f"**New members:** Read the server rules and use `!status` to check if the "
+            f"bot is live before running any commands."
+        ),
         color=0x00E5FF,
         timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="⏱️ System",
         value=(
-            "`!uptime` `!status` `!ping`\n"
-            "`!metrics` `!metricsraw` `!website`"
+            "`!uptime` — bot & Render uptime + RAM/CPU\n"
+            "`!status` — full system snapshot\n"
+            "`!ping`   — gateway latency\n"
+            "`!metrics` — live telemetry counters\n"
+            "`!metricsraw` — download raw JSON export\n"
+            "`!website` — dashboard & API URLs"
         ), inline=False)
     embed.add_field(name="📡 Webhooks",
         value=(
-            "`!webhooks` `!webhooklist`\n"
-            "`!webhookinfo <name>` `!webhookaccounts <name>`"
+            "`!webhooks` — total/active count\n"
+            "`!webhooklist` — all registered channels\n"
+            "`!webhookinfo <name>` — per-channel detail\n"
+            "`!webhookaccounts <name>` — accounts in a channel"
         ), inline=False)
     embed.add_field(name="🔎 Channels",
         value=(
-            "`!channels` `!channellist`\n"
-            "`!channelinfo [#ch]` `!addchannel #ch` `!removechannel #ch`"
+            "`!channels` — detection breakdown\n"
+            "`!channellist` — all auto-detected IDs\n"
+            "`!channelinfo [#ch]` — per-channel flags\n"
+            "`!addchannel #ch` — manually monitor a channel\n"
+            "`!removechannel #ch` — stop monitoring"
         ), inline=False)
     embed.add_field(name="⚙️ Config",
         value=(
-            "`!config`\n"
-            "`!addcontainer <id>` `!removecontainer <id>`\n"
-            "`!addwhitelist <id>` `!removewhitelist <id>`\n"
-            "`!setwarntime <s>`"
+            "`!config` — view current settings\n"
+            "`!addcontainer <id>` / `!removecontainer <id>`\n"
+            "`!addwhitelist <id>` / `!removewhitelist <id>`\n"
+            "`!setwarntime <s>` — merchant departure warning threshold"
         ), inline=False)
     embed.add_field(name="🌍 Biomes",
         value=(
-            "`!biomes` `!biomeinfo <name>`\n"
-            "`!livebiomes`"
+            "`!biomes` — all biome event counts\n"
+            "`!biomeinfo <name>` — limits, capacity & tip\n"
+            "`!livebiomes` — active biome sessions"
         ), inline=False)
     embed.add_field(name="🏪 Merchants",
         value=(
-            "`!merchants` `!merchantinfo <name>`\n"
-            "`!livemerchants`"
+            "`!merchants` — all merchant event counts\n"
+            "`!merchantinfo <name>` — intel & capacity\n"
+            "`!livemerchants` — active merchant windows"
         ), inline=False)
-    embed.add_field(name="⚡ Live",
-        value="`!live` `!clearevents`", inline=False)
+    embed.add_field(name="⚡ Live Events",
+        value=(
+            "`!live` — all active biomes + merchants\n"
+            "`!clearevents` — ⚠️ wipe all live sessions"
+        ), inline=False)
     embed.add_field(name="🧮 Calculator",
-        value="`!capacity <name>` `!sessionlimits`", inline=False)
-    embed.add_field(name="☁️ Data",
-        value="`!backup` `!restore` `!savemetrics`", inline=False)
+        value=(
+            "`!capacity <name>` — 30s / 40s / 60s cycle caps\n"
+            "`!sessionlimits` — full session time table"
+        ), inline=False)
+    embed.add_field(name="☁️ Data & Backup",
+        value=(
+            "`!backup` — force cloud backup now\n"
+            "`!restore` — restore from latest cloud backup\n"
+            "`!savemetrics` — force local disk save"
+        ), inline=False)
     embed.add_field(name="🏛️ Discord",
-        value="`!serverinfo` `!guilds` `!pinned [#ch]`", inline=False)
-    embed.set_footer(text=_zite_footer("Help"))
+        value=(
+            "`!serverinfo` — guild stats\n"
+            "`!guilds` — all guilds the bot is in\n"
+            "`!pinned [#ch]` — list pinned messages"
+        ), inline=False)
+    embed.add_field(name="ℹ️ New Member Quick-Start",
+        value=(
+            "> **1.** Confirm the bot is online: `!ping`\n"
+            "> **2.** Check active sessions: `!live`\n"
+            "> **3.** See biome/merchant history: `!biomes` · `!merchants`\n"
+            "> **4.** Join a live server: `!livebiomes` or `!livemerchants`\n"
+            "> **5.** Need capacity info? `!capacity <biome/merchant name>`"
+        ), inline=False)
+    embed.set_footer(text=_zite_footer("Help  •  v2.0"))
     await ctx.send(embed=embed)
 
 # ── 17. Bot Events ────────────────────────────────────────────────────────────
@@ -1775,6 +1815,52 @@ async def on_ready():
     log.info(f"SYSTEM ONLINE — {bot.user} ready.")
     if not merchant_departure_watchdog.is_running():
         merchant_departure_watchdog.start()
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    """
+    Welcome new members with a rich embed.
+    Sends to the channel set in WELCOME_CHANNEL_ID env var,
+    or falls back to the first channel named 'general' or 'welcome'.
+    """
+    dest = bot.get_channel(WELCOME_CHANNEL_ID)
+    if not dest:
+        log.warning("WELCOME: server-output channel not found — skipping.")
+        return
+
+    joined_at  = member.joined_at or datetime.now(timezone.utc)
+    created_at = member.created_at
+    account_age_days = (datetime.now(timezone.utc) - created_at).days
+
+    embed = discord.Embed(
+        title=f"👋  Welcome to {member.guild.name}!",
+        description=(
+            f"Hey {member.mention}, glad you're here! 🎉\n\n"
+            f"**Getting started:**\n"
+            f"> **1.** Read the server rules in your rules channel.\n"
+            f"> **2.** Head to <#{CMD_CHANNEL_ID}> to run bot commands.\n"
+            f"> **3.** Use `!help` for the full command list.\n"
+            f"> **4.** Use `!live` to see all active biome & merchant sessions.\n"
+            f"> **5.** Use `!capacity <name>` to calculate how many accounts fit in a window.\n\n"
+            f"If you need help, tag a moderator or ask in the right channel. Have fun! 🚀"
+        ),
+        color=0x00FFA3,
+        timestamp=joined_at,
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="👤 Username",     value=f"`{member}`",                  inline=True)
+    embed.add_field(name="🆔 User ID",      value=f"`{member.id}`",               inline=True)
+    embed.add_field(name="📅 Account Age",  value=f"`{account_age_days} days`",   inline=True)
+    embed.add_field(name="👥 Member #",     value=f"`{member.guild.member_count}`",inline=True)
+    embed.set_footer(text=_zite_footer(f"Welcome  •  {member.guild.name}"))
+
+    try:
+        await dest.send(embed=embed)
+        log.info(f"WELCOME: Sent welcome to {member} in #{dest.name}")
+    except discord.Forbidden:
+        log.warning(f"WELCOME: Missing permission to send in #{dest.name}")
+    except Exception as e:
+        log.error(f"WELCOME: {e}")
 
 @bot.event
 async def on_guild_channel_create(channel):
@@ -1803,11 +1889,9 @@ async def on_message(message: discord.Message):
     if message.author == bot.user:
         return
 
-    # ── website-output → embed-output auto-format ──────────────────────────
+    # ── website-output → embed-output auto-format ─────────────────────────
     if message.channel.id == EXTENDED_LOG_CHANNEL_ID and message.content:
-        # Auto-pin errors
         await maybe_auto_pin_error(message)
-        # Forward as rich embed to embed-output
         embed_ch = _get_embed_output_channel()
         if embed_ch:
             try:
@@ -1816,10 +1900,10 @@ async def on_message(message: discord.Message):
             except Exception as e:
                 log.error(f"Auto-format error: {e}")
 
-    # ── Allow commands (only in CMD channel) ─────────────────────────────────
+    # ── Allow commands (only in CMD channel) ─────────────────────────────
     await bot.process_commands(message)
 
-    # ── Skip own messages and non-monitored channels ─────────────────────────
+    # ── Skip non-monitored channels ───────────────────────────────────────
     channel_name_lower = message.channel.name.lower()
     if "webhook" in channel_name_lower and message.channel.id not in dynamic_detected_channels:
         _register_channel(message.channel)
@@ -1870,9 +1954,9 @@ async def on_message(message: discord.Message):
 
     for emb in message.embeds:
         parts = []
-        if emb.title:                        parts.append(emb.title)
-        if emb.description:                  parts.append(emb.description)
-        if emb.author and emb.author.name:   parts.append(emb.author.name)
+        if emb.title:                       parts.append(emb.title)
+        if emb.description:                 parts.append(emb.description)
+        if emb.author and emb.author.name:  parts.append(emb.author.name)
         for f in emb.fields:
             if f.name:  parts.append(f.name)
             if f.value: parts.append(f.value)
