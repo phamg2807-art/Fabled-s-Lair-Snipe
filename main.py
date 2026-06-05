@@ -14,7 +14,7 @@
 #  11.  Merchant Departure Watchdog
 #  12.  Auto-Pin Error System
 #  13.  website-output → embed-output Auto-Formatter
-#  14.  Web Server (dashboard + /api/metrics)
+#  14.  Web Server (dashboard + /api/metrics + /api/zite)
 #  15.  Core Message Processing
 #  16.  DISCORD COMMANDS  (30+)
 #  17.  Boot
@@ -366,6 +366,45 @@ def get_metrics_payload() -> dict:
             "save_interval_s":           SAVE_INTERVAL_S,
             "backup_interval_s":         BACKUP_INTERVAL_S,
         },
+    }
+
+def get_zite_payload() -> dict:
+    """Compact payload designed for Zite to consume directly."""
+    m = get_metrics_payload()
+    t = m["telemetry"]
+    return {
+        "status":           "ONLINE",
+        "timestamp":        m["timestamp"],
+        "uptime":           m["uptime"],
+        "bot_started_at":   BOT_START_TIME.isoformat(),
+        "webhooks":         t["total_registered_webhooks"],
+        "active":           t["active_webhooks_last_10m"],
+        "total_biomes":     t["grand_total_biomes"],
+        "total_merchants":  t["grand_total_merchants"],
+        "detected_channels": t["total_detected_channels"],
+        "live_events":      t["active_live_events"],
+        "grand_biomes":     sum(m["counters"]["biomes"].values()),
+        "grand_merchants":  sum(m["counters"]["merchants"].values()),
+        "streams": [
+            {
+                "name":     s["name"],
+                "accounts": s["accounts_count"],
+                "last_seen_ago_mins": s["last_seen_ago_mins"],
+            }
+            for s in m["active_webhook_streams"]
+        ],
+        "live_event_list": [
+            {
+                "name":       ev["name"],
+                "type":       ev["type"],
+                "channel":    ev["channel_name"],
+                "account":    ev.get("account_identity", "Unknown"),
+                "started_at": ev["started_at"],
+            }
+            for ev in m["live_events"]
+        ],
+        "biome_breakdown":    m["counters"]["biomes"],
+        "merchant_breakdown": m["counters"]["merchants"],
     }
 
 # ── 10. Embed Builders ────────────────────────────────────────────────────────
@@ -784,6 +823,17 @@ class RenderHealthCheckHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        # ── /api/zite — compact Zite-optimised payload ────────────────────
+        if self.path == "/api/zite":
+            body = json.dumps(get_zite_payload(), ensure_ascii=False, indent=2).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # ── /api/metrics — full payload ───────────────────────────────────
         if self.path == "/api/metrics":
             body = json.dumps(get_metrics_payload(), ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(200)
@@ -792,6 +842,8 @@ class RenderHealthCheckHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+
+        # ── / — HTML dashboard ────────────────────────────────────────────
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
@@ -922,6 +974,16 @@ async def _process_merchant(message, combined_lower, is_start, cid_str,
     exec_ms        = (time.perf_counter() - t0) * 1000
     macro_capacity = calculate_macro_capacity(merchant_name)
 
+    # ── Structured log line for Zite parsing ─────────────────────────────
+    print(f"[ZITE_DATA] type=merchant event={event_type} name={merchant_name} "
+          f"channel={message.channel.name} account={account_identity} "
+          f"duration={duration_str} capacity={macro_capacity} "
+          f"active={metrics['telemetry']['active_webhooks_last_10m']} "
+          f"total={metrics['telemetry']['total_registered_webhooks']} "
+          f"grand_merchants={metrics['telemetry']['grand_total_merchants']} "
+          f"live={metrics['telemetry']['active_live_events']}")
+
+    # ── Human-readable log block ──────────────────────────────────────────
     print(f"\n[MERCHANT] {event_type} | {merchant_name} | {account_identity}")
     print(f"   Channel : #{message.channel.name}  ({guild_name})")
     if roblox_link:
@@ -988,6 +1050,16 @@ async def _process_biome(message, combined_text, combined_lower, is_start,
     exec_ms        = (time.perf_counter() - t0) * 1000
     macro_capacity = calculate_macro_capacity(biome_name)
 
+    # ── Structured log line for Zite parsing ─────────────────────────────
+    print(f"[ZITE_DATA] type=biome event={event_type} name={biome_name} "
+          f"channel={message.channel.name} account={account_identity} "
+          f"duration={duration_str} capacity={macro_capacity} "
+          f"active={metrics['telemetry']['active_webhooks_last_10m']} "
+          f"total={metrics['telemetry']['total_registered_webhooks']} "
+          f"grand_biomes={metrics['telemetry']['grand_total_biomes']} "
+          f"live={metrics['telemetry']['active_live_events']}")
+
+    # ── Human-readable log block ──────────────────────────────────────────
     print(f"\n[BIOME] {event_type} | {biome_name} | {account_identity}")
     print(f"   Channel : #{message.channel.name}  ({guild_name})")
     if roblox_link:
@@ -1554,10 +1626,11 @@ async def cmd_website(ctx):
     render_url = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:10000")
     embed      = discord.Embed(title="🌐  Website & API Info", color=0x00E5FF,
                                timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="🖥️ Dashboard", value=f"`{render_url}/`",           inline=False)
-    embed.add_field(name="📡 API",       value=f"`{render_url}/api/metrics`", inline=False)
-    embed.add_field(name="⏱️ Uptime",   value=f"`{_fmt_uptime(BOT_START_TIME)}`", inline=True)
-    embed.add_field(name="🔄 Refresh",  value="`Every 15s (auto)`",           inline=True)
+    embed.add_field(name="🖥️ Dashboard",  value=f"`{render_url}/`",              inline=False)
+    embed.add_field(name="📡 API",        value=f"`{render_url}/api/metrics`",    inline=False)
+    embed.add_field(name="⚡ Zite API",   value=f"`{render_url}/api/zite`",       inline=False)
+    embed.add_field(name="⏱️ Uptime",    value=f"`{_fmt_uptime(BOT_START_TIME)}`", inline=True)
+    embed.add_field(name="🔄 Refresh",   value="`Every 15s (auto)`",              inline=True)
     embed.set_footer(text=_zite_footer("Website"))
     await ctx.send(embed=embed)
 
@@ -1708,8 +1781,6 @@ async def cmd_pinned(ctx, channel: discord.TextChannel = None):
                           timestamp=datetime.now(timezone.utc))
     embed.set_footer(text=_zite_footer("Pinned"))
     await ctx.send(embed=embed)
-
-# ─────────────────────────── HELP ─────────────────────────────────────────────
 
 # ─────────────────────────── INTERACTIVE HELP ────────────────────────────────
 
@@ -1935,18 +2006,13 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    """
-    Welcome new members with a rich embed.
-    Sends to the channel set in WELCOME_CHANNEL_ID env var,
-    or falls back to the first channel named 'general' or 'welcome'.
-    """
     dest = bot.get_channel(WELCOME_CHANNEL_ID)
     if not dest:
         log.warning("WELCOME: server-output channel not found — skipping.")
         return
 
-    joined_at  = member.joined_at or datetime.now(timezone.utc)
-    created_at = member.created_at
+    joined_at        = member.joined_at or datetime.now(timezone.utc)
+    created_at       = member.created_at
     account_age_days = (datetime.now(timezone.utc) - created_at).days
 
     embed = discord.Embed(
@@ -1965,10 +2031,10 @@ async def on_member_join(member: discord.Member):
         timestamp=joined_at,
     )
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="👤 Username",     value=f"`{member}`",                  inline=True)
-    embed.add_field(name="🆔 User ID",      value=f"`{member.id}`",               inline=True)
-    embed.add_field(name="📅 Account Age",  value=f"`{account_age_days} days`",   inline=True)
-    embed.add_field(name="👥 Member #",     value=f"`{member.guild.member_count}`",inline=True)
+    embed.add_field(name="👤 Username",    value=f"`{member}`",                   inline=True)
+    embed.add_field(name="🆔 User ID",     value=f"`{member.id}`",                inline=True)
+    embed.add_field(name="📅 Account Age", value=f"`{account_age_days} days`",    inline=True)
+    embed.add_field(name="👥 Member #",    value=f"`{member.guild.member_count}`", inline=True)
     embed.set_footer(text=_zite_footer(f"Welcome  •  {member.guild.name}"))
 
     try:
@@ -2007,10 +2073,8 @@ async def on_message(message: discord.Message):
         return
 
     # ── website-output: plain text passthrough only ───────────────────────
-    # website-output now shows RAW plain text only — no rich embed forwarding.
     if message.channel.id == EXTENDED_LOG_CHANNEL_ID and message.content:
         await maybe_auto_pin_error(message)
-        # Plain text is left as-is in website-output. No auto-formatting.
 
     # ── Allow commands (only in CMD channel) ─────────────────────────────
     await bot.process_commands(message)
@@ -2095,7 +2159,6 @@ async def on_message(message: discord.Message):
 
 # ─────────────────────────── SOL'S RNG WIKI ──────────────────────────────────
 
-# ── Biome Data (from wiki) ────────────────────────────────────────────────────
 WIKI_BIOMES = {
     "NORMAL": {
         "desc": "The default, grassy, plain biome. No special features. Active when no other biome is present.",
@@ -2329,7 +2392,6 @@ WIKI_AURA_TIERS = {
 
 def _wiki_biome_embed(name: str):
     key  = name.upper().replace("-", " ").replace("_", " ")
-    # Try fuzzy match
     data = None
     for k, v in WIKI_BIOMES.items():
         if key in k or k in key or k.startswith(key[:4]):
@@ -2408,7 +2470,6 @@ async def cmd_wiki(ctx, category: str = None, *, query: str = None):
     if not _cmd_guard(ctx): return
 
     if not category:
-        # Show wiki overview
         embed = discord.Embed(
             title="📖  Sol's RNG Wiki",
             description=(
@@ -2432,7 +2493,6 @@ async def cmd_wiki(ctx, category: str = None, *, query: str = None):
 
     cat = category.lower()
 
-    # LIST commands
     if cat == "biomes":
         lines = []
         for k, d in WIKI_BIOMES.items():
@@ -2467,7 +2527,6 @@ async def cmd_wiki(ctx, category: str = None, *, query: str = None):
             color=0xFF2A2A))
         return
 
-    # LOOKUP commands
     if cat in ("biome", "b"):
         embed, matched = _wiki_biome_embed(query)
         if not embed:
@@ -2479,7 +2538,6 @@ async def cmd_wiki(ctx, category: str = None, *, query: str = None):
     elif cat in ("event", "e"):
         embed, matched = _wiki_event_embed(query)
         if not embed:
-            names = ", ".join(f"`{k.title()}`" for k in list(WIKI_EVENTS.keys())[:10])
             await ctx.send(embed=discord.Embed(description=f"❌ Event `{query}` not found.\nUse `!wiki events` to see all events.", color=0xFF2A2A))
             return
         await ctx.send(embed=embed)
@@ -2537,7 +2595,6 @@ async def cmd_wiki(ctx, category: str = None, *, query: str = None):
                 "Or just use `!wiki` for the full overview."
             ),
             color=0xFF2A2A))
-
 
 
 # ── Boot ──────────────────────────────────────────────────────────────────────
