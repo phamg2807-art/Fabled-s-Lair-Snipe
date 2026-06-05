@@ -1760,7 +1760,7 @@ HELP_SECTIONS = {
         "color": 0xF59E0B,
     },
     "🌍 Biomes": {
-        "desc": "Track and inspect Sol\'s RNG biome events.",
+        "desc": "Track and inspect Sol's RNG biome events.",
         "commands": [
             ("`!biomes`",          "All biome event counts"),
             ("`!biomeinfo <name>`", "Session limits, capacity & strategy tip"),
@@ -1811,11 +1811,11 @@ HELP_SECTIONS = {
         ],
         "color": 0x5865F2,
     },
-    "📖 Sol\'s RNG Wiki": {
-        "desc": "Look up Sol\'s RNG game information: biomes, auras, events, items, NPCs.",
+    "📖 Sol's RNG Wiki": {
+        "desc": "Look up Sol's RNG game information: biomes, auras, events, items, NPCs.",
         "commands": [
             ("`!wiki biome <name>`",    "Info about a biome (spawn rate, auras, tips)"),
-            ("`!wiki aura <name>`",     "Look up an aura\'s rarity and biome"),
+            ("`!wiki aura <name>`",     "Look up an aura's rarity and biome"),
             ("`!wiki event <name>`",    "Info about a seasonal event and its auras"),
             ("`!wiki npc <name>`",      "Info about an NPC in the game"),
             ("`!wiki item <name>`",     "Info about a potion, gear, or item"),
@@ -2337,7 +2337,7 @@ def _wiki_biome_embed(name: str):
     if not data:
         return None, None
     embed = discord.Embed(
-        title=f"{data['emoji']}  Sol\'s RNG Wiki — {key} Biome",
+        title=f"{data['emoji']}  Sol's RNG Wiki — {key} Biome",
         description=f"*{data['desc']}*",
         color=data["color"],
         timestamp=datetime.now(timezone.utc),
@@ -2348,7 +2348,7 @@ def _wiki_biome_embed(name: str):
     embed.add_field(name="✨ Native Auras", value=data["auras"],     inline=False)
     embed.add_field(name="📦 Biome Item",   value=data["item"],      inline=False)
     embed.add_field(name="💡 Strategy Tip", value=f"*{data['tip']}*",inline=False)
-    embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Biomes"))
+    embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Biomes"))
     return embed, key
 
 def _wiki_event_embed(name: str):
@@ -2360,12 +2360,12 @@ def _wiki_event_embed(name: str):
     if not data:
         return None, None
     embed = discord.Embed(
-        title=f"🎉  Sol\'s RNG Wiki — {key}",
+        title=f"🎉  Sol's RNG Wiki — {key}",
         description=data,
         color=0xFF69B4,
         timestamp=datetime.now(timezone.utc),
     )
-    embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Events"))
+    embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Events"))
     return embed, key
 
 def _wiki_npc_embed(name: str):
@@ -2377,12 +2377,12 @@ def _wiki_npc_embed(name: str):
     if not data:
         return None, None
     embed = discord.Embed(
-        title=f"🧑  Sol\'s RNG Wiki — {key}",
+        title=f"🧑  Sol's RNG Wiki — {key}",
         description=data,
         color=0x00FFA3,
         timestamp=datetime.now(timezone.utc),
     )
-    embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  NPCs"))
+    embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  NPCs"))
     return embed, key
 
 def _wiki_item_embed(name: str):
@@ -2394,25 +2394,25 @@ def _wiki_item_embed(name: str):
     if not data:
         return None, None
     embed = discord.Embed(
-        title=f"🧪  Sol\'s RNG Wiki — {key}",
+        title=f"🧪  Sol's RNG Wiki — {key}",
         description=data,
         color=0xF59E0B,
         timestamp=datetime.now(timezone.utc),
     )
-    embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Items"))
+    embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Items"))
     return embed, key
 
 @bot.command(name="wiki", aliases=["w", "srng"])
 async def cmd_wiki(ctx, category: str = None, *, query: str = None):
-    """Sol\'s RNG wiki: !wiki biome <name> | !wiki aura <tier> | !wiki event <name> | !wiki npc <name> | !wiki item <name> | !wiki biomes | !wiki events | !wiki auras"""
+    """Sol's RNG wiki: !wiki biome <name> | !wiki aura <tier> | !wiki event <name> | !wiki npc <name> | !wiki item <name> | !wiki biomes | !wiki events | !wiki auras"""
     if not _cmd_guard(ctx): return
 
     if not category:
         # Show wiki overview
         embed = discord.Embed(
-            title="📖  Sol\'s RNG Wiki",
+            title="📖  Sol's RNG Wiki",
             description=(
-                "**Welcome to the Sol\'s RNG Wiki branch!**\n\n"
+                "**Welcome to the Sol's RNG Wiki branch!**\n\n"
                 "Use `!wiki <category> <name>` to look up game info:\n\u200b"
             ),
             color=0xFF69B4,
@@ -2426,7 +2426,7 @@ async def cmd_wiki(ctx, category: str = None, *, query: str = None):
         embed.add_field(name="📋 List Commands:",
             value="`!wiki biomes` — list all biomes\n`!wiki events` — list all events\n`!wiki auras` — aura rarity table",
             inline=False)
-        embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki"))
+        embed.set_footer(text=_zite_footer("Sol's RNG Wiki"))
         await ctx.send(embed=embed)
         return
 
@@ -2434,27 +2434,30 @@ async def cmd_wiki(ctx, category: str = None, *, query: str = None):
 
     # LIST commands
     if cat == "biomes":
-        lines = [f"{d[\'emoji\']} **{k}** — Spawn: {d[\'spawn\']} | Duration: {d[\'duration\']}" for k, d in WIKI_BIOMES.items()]
-        embed = discord.Embed(title="🌍  Sol\'s RNG — All Biomes", description="\n".join(lines), color=0x00E5FF, timestamp=datetime.now(timezone.utc))
-        embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Biomes List"))
+        lines = []
+        for k, d in WIKI_BIOMES.items():
+            emoji = d['emoji']; spawn = d['spawn']; dur = d['duration']
+            lines.append(f"{emoji} **{k}** — Spawn: {spawn} | Duration: {dur}")
+        embed = discord.Embed(title="🌍  Sol's RNG — All Biomes", description="\n".join(lines), color=0x00E5FF, timestamp=datetime.now(timezone.utc))
+        embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Biomes List"))
         await ctx.send(embed=embed)
         return
 
     if cat == "events":
         lines = [f"🎉 **{k}**" for k in WIKI_EVENTS.keys()]
-        embed = discord.Embed(title="🎉  Sol\'s RNG — All Events", description="\n".join(lines), color=0xFF69B4, timestamp=datetime.now(timezone.utc))
+        embed = discord.Embed(title="🎉  Sol's RNG — All Events", description="\n".join(lines), color=0xFF69B4, timestamp=datetime.now(timezone.utc))
         embed.add_field(name="ℹ️ Usage", value="`!wiki event <name>` for details on any event", inline=False)
-        embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Events List"))
+        embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Events List"))
         await ctx.send(embed=embed)
         return
 
     if cat == "auras":
-        embed = discord.Embed(title="✨  Sol\'s RNG — Aura Rarity Tiers", description="Aura rarity classifications from common to ultra-rare:", color=0xFFD700, timestamp=datetime.now(timezone.utc))
+        embed = discord.Embed(title="✨  Sol's RNG — Aura Rarity Tiers", description="Aura rarity classifications from common to ultra-rare:", color=0xFFD700, timestamp=datetime.now(timezone.utc))
         tier_colors = {"Basic":"🩶","Epic":"🟣","Unique":"🔵","Legendary":"🟡","Mythic":"🟠","Exalted":"🔴","Glorious":"🌟","Transcendent":"💫","Dimensional":"🌀","Challenged":"⚠️","Challenged+":"🚫","Event":"🎉"}
         for tier, desc in WIKI_AURA_TIERS.items():
             icon = tier_colors.get(tier, "▪️")
             embed.add_field(name=f"{icon} **{tier}**", value=desc, inline=False)
-        embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Aura Tiers"))
+        embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Aura Tiers"))
         await ctx.send(embed=embed)
         return
 
@@ -2505,25 +2508,25 @@ async def cmd_wiki(ctx, category: str = None, *, query: str = None):
                 data = v; key = k; break
         if not data:
             embed = discord.Embed(
-                title=f"✨  Sol\'s RNG Wiki — Aura Search: {query}",
+                title=f"✨  Sol's RNG Wiki — Aura Search: {query}",
                 description=(
                     f"Could not find a specific aura tier matching `{query}`.\n\n"
                     f"**Use `!wiki auras`** to see all rarity tiers, or search for a biome with\n"
-                    f"`!wiki biome <name>` to see that biome\'s native auras."
+                    f"`!wiki biome <name>` to see that biome's native auras."
                 ),
                 color=0xFFD700,
                 timestamp=datetime.now(timezone.utc),
             )
-            embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Auras"))
+            embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Auras"))
             await ctx.send(embed=embed)
         else:
             embed = discord.Embed(
-                title=f"✨  Sol\'s RNG Wiki — {key} Tier",
+                title=f"✨  Sol's RNG Wiki — {key} Tier",
                 description=data,
                 color=0xFFD700,
                 timestamp=datetime.now(timezone.utc),
             )
-            embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Aura Tiers"))
+            embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Aura Tiers"))
             await ctx.send(embed=embed)
     else:
         await ctx.send(embed=discord.Embed(
