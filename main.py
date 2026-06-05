@@ -1711,96 +1711,213 @@ async def cmd_pinned(ctx, channel: discord.TextChannel = None):
 
 # ─────────────────────────── HELP ─────────────────────────────────────────────
 
-@bot.command(name="help", aliases=["h", "commands", "cmds"])
-async def cmd_help(ctx):
-    """Show all available commands."""
-    if not _cmd_guard(ctx): return
+# ─────────────────────────── INTERACTIVE HELP ────────────────────────────────
+
+HELP_SECTIONS = {
+    "⚙️ System": {
+        "desc": "Bot status, uptime, metrics, and website dashboard.",
+        "commands": [
+            ("`!uptime`",       "Bot & Render uptime + RAM/CPU usage"),
+            ("`!status`",       "Full system snapshot"),
+            ("`!ping`",         "Gateway latency"),
+            ("`!metrics`",      "Live telemetry counters"),
+            ("`!metricsraw`",   "Download raw JSON metrics export"),
+            ("`!website`",      "Dashboard & API URLs"),
+        ],
+        "color": 0x00E5FF,
+    },
+    "📡 Webhooks": {
+        "desc": "Monitor and inspect webhook feed channels.",
+        "commands": [
+            ("`!webhooks`",                "Total/active webhook count"),
+            ("`!webhooklist`",             "All registered webhook channels"),
+            ("`!webhookinfo <name>`",       "Per-channel detail & accounts"),
+            ("`!webhookaccounts <name>`",  "All accounts tracked in a channel"),
+        ],
+        "color": 0xA78BFA,
+    },
+    "🔎 Channels": {
+        "desc": "Manage auto-detection of monitored channels.",
+        "commands": [
+            ("`!channels`",            "Detection breakdown overview"),
+            ("`!channellist`",         "All auto-detected channel IDs"),
+            ("`!channelinfo [#ch]`",   "Per-channel flags & stats"),
+            ("`!addchannel #ch`",      "Manually add a channel to monitor"),
+            ("`!removechannel #ch`",   "Stop monitoring a channel"),
+        ],
+        "color": 0x00FFA3,
+    },
+    "🛠️ Config": {
+        "desc": "Adjust bot detection settings and thresholds.",
+        "commands": [
+            ("`!config`",                    "View current settings"),
+            ("`!addcontainer <id>`",         "Add a guild/category to auto-detect"),
+            ("`!removecontainer <id>`",      "Remove a guild/category"),
+            ("`!addwhitelist <id>`",         "Add a channel to static whitelist"),
+            ("`!removewhitelist <id>`",      "Remove from static whitelist"),
+            ("`!setwarntime <s>`",           "Set merchant departure warning time"),
+        ],
+        "color": 0xF59E0B,
+    },
+    "🌍 Biomes": {
+        "desc": "Track and inspect Sol\'s RNG biome events.",
+        "commands": [
+            ("`!biomes`",          "All biome event counts"),
+            ("`!biomeinfo <name>`", "Session limits, capacity & strategy tip"),
+            ("`!livebiomes`",      "All currently active biome sessions"),
+        ],
+        "color": 0x9B59B6,
+    },
+    "🏪 Merchants": {
+        "desc": "Monitor merchant spawns and departure timers.",
+        "commands": [
+            ("`!merchants`",           "All merchant event counts"),
+            ("`!merchantinfo <name>`", "Intel, window length & capacity"),
+            ("`!livemerchants`",       "All currently active merchant windows"),
+        ],
+        "color": 0xF59E0B,
+    },
+    "⚡ Live Events": {
+        "desc": "See all active biome & merchant sessions in real time.",
+        "commands": [
+            ("`!live`",         "All active biomes + merchants"),
+            ("`!clearevents`",  "⚠️ Wipe all live sessions"),
+        ],
+        "color": 0xFF2A2A,
+    },
+    "🧮 Calculator": {
+        "desc": "Calculate how many macro accounts fit in a session window.",
+        "commands": [
+            ("`!capacity <name>`",  "30s / 40s / 60s cycle caps for any biome/merchant"),
+            ("`!sessionlimits`",    "Full session time table for all events"),
+        ],
+        "color": 0x00E5FF,
+    },
+    "☁️ Data & Backup": {
+        "desc": "Cloud backup, restore, and local persistence tools.",
+        "commands": [
+            ("`!backup`",      "Force a cloud backup right now"),
+            ("`!restore`",     "Restore from latest cloud backup"),
+            ("`!savemetrics`", "Force local disk save"),
+        ],
+        "color": 0x00FFA3,
+    },
+    "🏛️ Discord": {
+        "desc": "Server info and Discord management utilities.",
+        "commands": [
+            ("`!serverinfo`",    "Guild stats overview"),
+            ("`!guilds`",        "All guilds the bot is in"),
+            ("`!pinned [#ch]`",  "List pinned messages in a channel"),
+        ],
+        "color": 0x5865F2,
+    },
+    "📖 Sol\'s RNG Wiki": {
+        "desc": "Look up Sol\'s RNG game information: biomes, auras, events, items, NPCs.",
+        "commands": [
+            ("`!wiki biome <name>`",    "Info about a biome (spawn rate, auras, tips)"),
+            ("`!wiki aura <name>`",     "Look up an aura\'s rarity and biome"),
+            ("`!wiki event <name>`",    "Info about a seasonal event and its auras"),
+            ("`!wiki npc <name>`",      "Info about an NPC in the game"),
+            ("`!wiki item <name>`",     "Info about a potion, gear, or item"),
+            ("`!wiki biomes`",          "List all biomes"),
+            ("`!wiki auras`",           "List aura rarity tiers"),
+            ("`!wiki events`",          "List all seasonal events"),
+        ],
+        "color": 0xFF69B4,
+    },
+}
+
+def _build_help_overview_embed():
     embed = discord.Embed(
-        title="📖  Zite Telemetry Bot — Command Reference",
+        title="📖  Zite Telemetry Bot — Interactive Help",
         description=(
-            f"All commands must be used in <#{CMD_CHANNEL_ID}>.\n"
-            f"**Prefix:** `!`\n\n"
-            f"**New members:** Read the server rules and use `!status` to check if the "
-            f"bot is live before running any commands."
+            f"Commands must be used in <#{CMD_CHANNEL_ID}>. **Prefix:** `!`\n\n"
+            "**Choose a category below** to see its commands:\n\u200b"
         ),
         color=0x00E5FF,
         timestamp=datetime.now(timezone.utc),
     )
-    embed.add_field(name="⏱️ System",
+    for section, data in HELP_SECTIONS.items():
+        embed.add_field(
+            name=section,
+            value=data["desc"],
+            inline=True,
+        )
+    embed.add_field(
+        name="\u200b",
         value=(
-            "`!uptime` — bot & Render uptime + RAM/CPU\n"
-            "`!status` — full system snapshot\n"
-            "`!ping`   — gateway latency\n"
-            "`!metrics` — live telemetry counters\n"
-            "`!metricsraw` — download raw JSON export\n"
-            "`!website` — dashboard & API URLs"
-        ), inline=False)
-    embed.add_field(name="📡 Webhooks",
-        value=(
-            "`!webhooks` — total/active count\n"
-            "`!webhooklist` — all registered channels\n"
-            "`!webhookinfo <name>` — per-channel detail\n"
-            "`!webhookaccounts <name>` — accounts in a channel"
-        ), inline=False)
-    embed.add_field(name="🔎 Channels",
-        value=(
-            "`!channels` — detection breakdown\n"
-            "`!channellist` — all auto-detected IDs\n"
-            "`!channelinfo [#ch]` — per-channel flags\n"
-            "`!addchannel #ch` — manually monitor a channel\n"
-            "`!removechannel #ch` — stop monitoring"
-        ), inline=False)
-    embed.add_field(name="⚙️ Config",
-        value=(
-            "`!config` — view current settings\n"
-            "`!addcontainer <id>` / `!removecontainer <id>`\n"
-            "`!addwhitelist <id>` / `!removewhitelist <id>`\n"
-            "`!setwarntime <s>` — merchant departure warning threshold"
-        ), inline=False)
-    embed.add_field(name="🌍 Biomes",
-        value=(
-            "`!biomes` — all biome event counts\n"
-            "`!biomeinfo <name>` — limits, capacity & tip\n"
-            "`!livebiomes` — active biome sessions"
-        ), inline=False)
-    embed.add_field(name="🏪 Merchants",
-        value=(
-            "`!merchants` — all merchant event counts\n"
-            "`!merchantinfo <name>` — intel & capacity\n"
-            "`!livemerchants` — active merchant windows"
-        ), inline=False)
-    embed.add_field(name="⚡ Live Events",
-        value=(
-            "`!live` — all active biomes + merchants\n"
-            "`!clearevents` — ⚠️ wipe all live sessions"
-        ), inline=False)
-    embed.add_field(name="🧮 Calculator",
-        value=(
-            "`!capacity <name>` — 30s / 40s / 60s cycle caps\n"
-            "`!sessionlimits` — full session time table"
-        ), inline=False)
-    embed.add_field(name="☁️ Data & Backup",
-        value=(
-            "`!backup` — force cloud backup now\n"
-            "`!restore` — restore from latest cloud backup\n"
-            "`!savemetrics` — force local disk save"
-        ), inline=False)
-    embed.add_field(name="🏛️ Discord",
-        value=(
-            "`!serverinfo` — guild stats\n"
-            "`!guilds` — all guilds the bot is in\n"
-            "`!pinned [#ch]` — list pinned messages"
-        ), inline=False)
-    embed.add_field(name="ℹ️ New Member Quick-Start",
-        value=(
-            "> **1.** Confirm the bot is online: `!ping`\n"
-            "> **2.** Check active sessions: `!live`\n"
-            "> **3.** See biome/merchant history: `!biomes` · `!merchants`\n"
-            "> **4.** Join a live server: `!livebiomes` or `!livemerchants`\n"
-            "> **5.** Need capacity info? `!capacity <biome/merchant name>`"
-        ), inline=False)
-    embed.set_footer(text=_zite_footer("Help  •  v2.0"))
-    await ctx.send(embed=embed)
+            "\n**Quick Start:**\n"
+            "> `!ping` → check bot is alive\n"
+            "> `!live` → see all active events\n"
+            "> `!biomes` / `!merchants` → event history\n"
+            "> `!capacity <name>` → calc account capacity"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text=_zite_footer("Help  •  v3.0  •  Select a category"))
+    return embed
+
+def _build_help_section_embed(section_key: str):
+    data   = HELP_SECTIONS[section_key]
+    embed  = discord.Embed(
+        title=f"{section_key} — Commands",
+        description=data["desc"] + "\n\u200b",
+        color=data["color"],
+        timestamp=datetime.now(timezone.utc),
+    )
+    for cmd, desc in data["commands"]:
+        embed.add_field(name=cmd, value=desc, inline=False)
+    embed.set_footer(text=_zite_footer(f"Help  •  {section_key}"))
+    return embed
+
+class HelpCategorySelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label=section,
+                description=data["desc"][:80],
+                value=section,
+            )
+            for section, data in HELP_SECTIONS.items()
+        ]
+        super().__init__(
+            placeholder="📂 Choose a command category...",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        section = self.values[0]
+        embed   = _build_help_section_embed(section)
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+class HelpBackButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="← Back to Overview", style=discord.ButtonStyle.secondary, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        embed = _build_help_overview_embed()
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+class HelpView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+        self.add_item(HelpCategorySelect())
+        self.add_item(HelpBackButton())
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+
+@bot.command(name="help", aliases=["h", "commands", "cmds"])
+async def cmd_help(ctx):
+    """Interactive help menu with category selector."""
+    if not _cmd_guard(ctx): return
+    embed = _build_help_overview_embed()
+    view  = HelpView()
+    await ctx.send(embed=embed, view=view)
+
 
 # ── 17. Bot Events ────────────────────────────────────────────────────────────
 
@@ -1889,16 +2006,11 @@ async def on_message(message: discord.Message):
     if message.author == bot.user:
         return
 
-    # ── website-output → embed-output auto-format ─────────────────────────
+    # ── website-output: plain text passthrough only ───────────────────────
+    # website-output now shows RAW plain text only — no rich embed forwarding.
     if message.channel.id == EXTENDED_LOG_CHANNEL_ID and message.content:
         await maybe_auto_pin_error(message)
-        embed_ch = _get_embed_output_channel()
-        if embed_ch:
-            try:
-                rich_embed = _build_plain_to_rich_embed(message)
-                await embed_ch.send(embed=rich_embed)
-            except Exception as e:
-                log.error(f"Auto-format error: {e}")
+        # Plain text is left as-is in website-output. No auto-formatting.
 
     # ── Allow commands (only in CMD channel) ─────────────────────────────
     await bot.process_commands(message)
@@ -1980,6 +2092,450 @@ async def on_message(message: discord.Message):
             await _process_biome(message, combined_text, combined_lower, is_start,
                                  cid_str, now_iso, guild_name, roblox_link, link_vector,
                                  account_identity, is_forwarder, t0)
+
+# ─────────────────────────── SOL'S RNG WIKI ──────────────────────────────────
+
+# ── Biome Data (from wiki) ────────────────────────────────────────────────────
+WIKI_BIOMES = {
+    "NORMAL": {
+        "desc": "The default, grassy, plain biome. No special features. Active when no other biome is present.",
+        "spawn": "Default (always active between biomes)",
+        "duration": "Until another biome spawns",
+        "bt": "N/A",
+        "auras": "None",
+        "item": "None",
+        "color": 0x778899,
+        "emoji": "🌿",
+        "tip": "Rotate accounts freely. Good baseline for farming common auras.",
+    },
+    "WINDY": {
+        "desc": "A refreshing and cool wind passes through the world. Leaves blow and wind swirls to the East.",
+        "spawn": "1 in 500/s (0.2%/s)",
+        "duration": "2 minutes",
+        "bt": "3x multiplier",
+        "auras": "**Wind** (1/300), **Flow** (1/29k), **Stormal** (1/30k), **Vortex** (1/133k), **Stormal: Hurricane** (1/4.5M), **Aviator** (1/8M), **Maelstrom** (1/103M)",
+        "item": "Wind Essence (crafting + Grail +2% Luck, +1% Speed)",
+        "color": 0xADD8E6,
+        "emoji": "💨",
+        "tip": "Short 2-minute window. Fast-cycle accounts only. Queue immediately on spawn.",
+    },
+    "SNOWY": {
+        "desc": "White snow and cold begin to cover the surroundings. Ground turns white with thin mist.",
+        "spawn": "1 in 600/s (0.167%/s)",
+        "duration": "2 minutes",
+        "bt": "3x multiplier",
+        "auras": "**Glacier** (1/768), **Permafrost** (1/24.5k), **Blizzard** (1/9.1M), **Chillsear** (1/125M)",
+        "item": "Icicle (crafting + Grail +2% Luck, +1% Speed)",
+        "color": 0xE0F7FA,
+        "emoji": "❄️",
+        "tip": "Short 2-minute window. Replaced by Eggland during Easter. Christmas event turns this into the default biome.",
+    },
+    "RAINY": {
+        "desc": "Strong winds and showers sweep through the world. Gray cloudy fog covers the atmosphere.",
+        "spawn": "1 in 750/s (0.133%/s)",
+        "duration": "2 minutes",
+        "bt": "4x multiplier",
+        "auras": "**Evanescent** (1/840k), **Poseidon** (1/1M), **Sharkyn** (1/2.5M), **Sailor** (1/3M), **Sailor: Flying Dutchman** (1/20M), **Aquaria** (1/20M), **Lumenpool** (1/55M), **Abyssal Hunter** (1/100M), **Sailor: Admiral** (1/135M), **Leviathan** (1/1.73B — no BT!)",
+        "item": "Rainy Bottle (crafting + Grail +2% Luck, +1% Speed)",
+        "color": 0x4682B4,
+        "emoji": "🌧️",
+        "tip": "4x breakthrough. Leviathan is exclusive — can only be rolled during Rainy or Glitched. High-value biome.",
+    },
+    "SANDSTORM": {
+        "desc": "A harsh Sand Storm blocks your path. Desert-like map with sandy texture, yellow leaves.",
+        "spawn": "1 in 3000/s (0.033%/s)",
+        "duration": "~10 minutes 50 seconds (650s)",
+        "bt": "4x multiplier",
+        "auras": "**Gilded** (1/128), **Jackpot** (1/194), **Gilded: Crowned** (1/5k), **Anubis** (1/1.8M), **Outlaw** (1/2M), **Atlas** (1/90M)",
+        "item": "Hourglass (Grail +3% Luck, +1.5% Speed)",
+        "color": 0xC2A35A,
+        "emoji": "🏜️",
+        "tip": "Extended ~10min window. Great for farming Gilded/Jackpot. Hourglass gives 3% Luck at Grail.",
+    },
+    "HELL": {
+        "desc": "A strong and violent energy of chaos overtakes the world. Red leaves, lava waterfalls.",
+        "spawn": "1 in 6666/s (0.015%/s)",
+        "duration": "666 seconds (11m 6s)",
+        "bt": "6x multiplier",
+        "auras": "**Undead** (1/2k), **Undead: Devil** (1/111k), **Hades** (1/1.1M), **Felled** (1/30M), **Bloodlust** (1/50M), **Pythios** (1/111M)",
+        "item": "Eternal Flame (crafting + Grail +5% Luck, +2.5% Speed)",
+        "color": 0xFF2A2A,
+        "emoji": "🔥",
+        "tip": "Exactly 11m 06s. 6x breakthrough — highest of weather biomes. Eternal Flame gives +5% Luck at Grail.",
+    },
+    "STARFALL": {
+        "desc": "Beautiful and dreamy starlight pours into the world. Dark blue atmosphere, stars fall from sky.",
+        "spawn": "1 in 7500/s (0.013%/s)",
+        "duration": "10 minutes",
+        "bt": "5x multiplier",
+        "auras": "**Starlight** (1/10k), **StarRider** (1/10k), **Starlight: Kunzite** (1/200k), **Astral** (1/267k), **Orion** (1/600k), **Stargazer** (1/1.84M), **Starscourge** (1/2M), **Sirius** (1/2.8M), **Starborn** (1/14.4M), **Starscourge: Radiant** (1/20M), **Astral: Zodiac** (1/53.4M)",
+        "item": "Piece of Star (crafting + Grail +5% Luck, +2.5% Speed). Stella's Star spawns with 5% chance instead of potions.",
+        "color": 0xFFD700,
+        "emoji": "🌠",
+        "tip": "10-minute window — great for deep queuing. Has a 1/100 chance to become Singularity instead.",
+    },
+    "HEAVEN": {
+        "desc": "A hand of angel leads you into divine place. Yellow-themed map with mist and glowing sigil.",
+        "spawn": "1 in 7777/s (0.0129%/s)",
+        "duration": "4 minutes (240s)",
+        "bt": "5x multiplier",
+        "auras": "**Divinus** (1/6!), **Divinus: Angel** (1/24k), **Hope** (1/97.7k), **Faith** (1/1.45M), **Divinus: Guardian** (1/1.56M), **Icarus** (1/3.13M), **Oculus** (1/4.67M), **Dominion** (1/14M), **Prophecy** (1/55M), **Archangel** (1/70M), **Ascendant** (1/187M)",
+        "item": "Feather Vial (Angel's Feather Lantern crafting + Grail +5% Luck, +2.5% Speed)",
+        "color": 0xFFFACD,
+        "emoji": "☁️",
+        "tip": "Divinus drops at 1/6 — easiest Legendary! 4-minute window is shorter than Starfall.",
+    },
+    "CORRUPTION": {
+        "desc": "Poisonous pollution spreads throughout the world. Purple fog, purple water, purple orb on top.",
+        "spawn": "1 in 9000/s (0.011%/s)",
+        "duration": "~10 minutes 50 seconds (650s)",
+        "bt": "5x multiplier",
+        "auras": "**Hazard** (1/1.4k), **Corrosive** (1/2.4k), **Hazard: Rays** (1/14k), **Symbiosis** (1/266k), **Parasite** (1/600k), **Impeached** (1/40M), **Monarch** (1/3B — no BT!)",
+        "item": "Curruptaine (crafting + Grail +10% Luck, +5% Speed)",
+        "color": 0x8B0000,
+        "emoji": "☠️",
+        "tip": "Best Grail bonus (+10% Luck, +5% Speed). Monarch is Corruption or Glitched only — no breakthrough.",
+    },
+    "NULL": {
+        "desc": "It's too dark here. Gray-themed map. Cannot roll Breakthrough aura during this biome.",
+        "spawn": "1 in 10100/s (0.0075%/s)",
+        "duration": "99 seconds (1m 39s)",
+        "bt": "1000x multiplier (breakthrough is effectively impossible)",
+        "auras": "**Undefined** (1/1.1k), **Flowed** (1/2.1k), **Shiftlock** (1/3.3k), **Nihility** (1/9k). Special: **Breakthrough** (1/2B — CANNOT roll during Null!)",
+        "item": "NULL? (crafting + Grail +10% Luck, +5% Speed). Also needed for Limbo access.",
+        "color": 0x36393F,
+        "emoji": "⬛",
+        "tip": "Null is mostly a downside biome — 1000x BT makes outside rolling nearly impossible. Best use: collect NULL? item for Grail/crafting.",
+    },
+    "GLITCHED": {
+        "desc": "Rarest biome. Trees glow with glitchy computer fuzz, pitch-black sky, black/gray ground.",
+        "spawn": "1 in 30000 per biome change (0.003%)",
+        "duration": "2 minutes 44 seconds (164s)",
+        "bt": "N/A — all native auras (except Rare Biome auras) roll at native rarity!",
+        "auras": "**Fault** (1/3k), **Glitch** (1/12.2M), **Oppression** (1/220M). Plus ALL non-Rare-Biome auras at native rarity.",
+        "item": "None",
+        "color": 0x00FF88,
+        "emoji": "⚠️",
+        "tip": "Save Heavenly/Oblivion potions for Glitched. All native auras roll at full rarity — extremely high value window.",
+    },
+    "DREAMSPACE": {
+        "desc": "Pink-themed biome. Tables, doors, beds floating in sky. Pink trees, white wood, pink mist.",
+        "spawn": "1 in 3.5M/s during Normal biome only (effectively ~1/7.5M/s global)",
+        "duration": "3 minutes 12 seconds (192s)",
+        "bt": "N/A — no breakthrough available",
+        "auras": "**★** (1/100), **★★** (1/1k), **★★★** (1/10k), **Borealis** (1/13.3M), **Dreammetric** (1/320M)",
+        "item": "Heavenly Potions spawn (3% per 10s, 1 guaranteed on spawn)",
+        "color": 0xFF69B4,
+        "emoji": "💤",
+        "tip": "Only spawns during Normal biome. Save potions. Guaranteed Heavenly Potion on spawn — extremely rare biome.",
+    },
+    "CYBERSPACE": {
+        "desc": "Blue cyber-themed biome. Only accessible via Strange Controller or Biome Randomizer (1/5000).",
+        "spawn": "1 in 5000 via Strange Controller/Biome Randomizer only",
+        "duration": "12 minutes",
+        "bt": "2x multiplier",
+        "auras": "16 auras + 2 exclusives: **Forbidden** (1/202), **Player** (1/1.5k), **Meta** (1/10k — luck unaffected), **Illusionary** (1/10M — luck unaffected), **Matrix** (1/25M), **Antivirus** (1/31.25M), **Aegis** (1/412.5M), **Pixelation** (1/536.9M), and more.",
+        "item": "None",
+        "color": 0x00E5FF,
+        "emoji": "🖥️",
+        "tip": "12-minute window — longest standard biome. Maximise queue depth. Meta and Illusionary ignore luck buffs.",
+    },
+    "SINGULARITY": {
+        "desc": "Has a 1/100 chance to replace Starfall. Pulls in everything. 20-minute window or ends when Astraios is rolled.",
+        "spawn": "1/100 chance instead of Starfall (any spawn method)",
+        "duration": "20 minutes or until Astraios is rolled",
+        "bt": "5x multiplier",
+        "auras": "**Comet** (1/24k), **Pleiades** (1/65k), **Pulsar** (1/83k), **Constella** (1/87k), **Galaxy** (1/1M), **Vega** (1/2.58M), **Astronaut** (1/6.1M), **Centurion** (1/25M), **Gargantua** (1/86M), **Projection** (1/197M), **Point: Zero** (1/521M), **Astraios** (1/1.75B — no BT!)",
+        "item": "Accretion Disk buff (x1.1 Final Luck) if present before biome spawns",
+        "color": 0x9B59B6,
+        "emoji": "🌀",
+        "tip": "Queue ALL accounts immediately. Be present before spawn for Accretion Disk buff. Ends early if someone rolls Astraios.",
+    },
+}
+
+WIKI_EVENTS = {
+    "CHRISTMAS 2023": "First seasonal event. Added Snowy biome, +100% Luck buff, new gears and rarities. No special auras.",
+    "VALENTINES 2024": "Added NPC Lime, 4 limited auras (Divinus: Love, Flushed: Heart Eye, Celestial: Cupid, Blossom) via quests.",
+    "EASTER 2024": "Added egg hunt quests for Lime, Easter Blessing (+50% Luck), limited UGC rewards.",
+    "APRIL FOOLS 2024": "Added Defined (1/2222 in Null), Kromat1k (1/40M), Impeached: i'm peach (1/400M).",
+    "SUMMER 2024": "Added beach area, new quests with Lime/Jake, Surfer (quest reward), StarRider: Starfish (1/25k Starfall), Shard Surfer (1/75M Snowy), Watermelon (1/320k). Marine Amulet item.",
+    "INNOVATOR 2024": "Roblox Innovation Awards event. Innovator aura (1/30M), RIA Points currency, limited packs. x2 Luck effect.",
+    "HALLOWEEN 2024": "Added Pumpkin Moon & Graveyard biomes, Jack The Pumpkin merchant, 10 limited auras including Harvester (1/666M) and Apostolos: Veil (1/800M).",
+    "WINTER 2025": "Added Ticket currency, Roulette wheels, Santa NPC, 8 limited auras in Snowy biome including Atlas: Yuletide (1/170M). Blossom: Frozen via quests.",
+    "APRIL FOOLS 2025": "Added pukeko (1/3198), Flushed: Troll (1/1M), Origin: Onion (1/8M), Glock: the glock of the sky (1/170M). Sizemax/Sizemin potions.",
+    "EASTER 2025": "Added 9 Biome Egg auras (Windy Egg through Glitched Egg). Limited UGC: Glitched Egg (5000 stock).",
+    "SUMMER 2025": "Added Blazing Sun biome (1/4 chance at Daytime), Manta (1/150M Blazing Sun), Aegis: Watergun (1/412.5M), SandBasket, Bubble, Bioluminescent, Life Guard, Ink: PaintballGun, Parasol. Season Pass I.",
+    "HALLOWEEN 2025": "31 new auras across 2 parts. New Blood Rain biome (summoned by Cursed Rune Fragment). Bounty Medal currency. Erebus (1/1.2B) and Lamenthyr (1/1B) in Blood Rain. Season Pass III.",
+    "CHRISTMAS 2025": "22 new auras. Aurora biome (1/50k/s or via Glowing Snow Globe during Snowy). Snowflake currency, Memory Match game, Christmas Roulette. Dream Traveler (1/1B Aurora). Season Pass IV.",
+    "VALENTINES 2026": "Added Velvet (via quest) and Symphony: Bloomed (1/375M). 1 Lime quest.",
+    "EASTER 2026": "15 new auras. Eggland biome (replaces Normal). Egg drop system, Easter Points currency. Sky Festival (1/2B), Eggore (1/700M). Season Pass VI.",
+    "APRIL FOOLS 2026": "15 new auras. Includes Equinox: You Are An Idiot (1/2.5B), A Fool\'s Experience (1/1B), Pukeko: P.U.K.E.K.O.G.O.D. (1/1B). Previous pukeko/Troll brought back.",
+}
+
+WIKI_NPCS = {
+    "LIME": "Yellow-skinned NPC with black hair and white cat hoodie. Quest giver for all major events (Valentine\'s, Summer, Halloween, Christmas, Easter). Cannot be damaged.",
+    "JAKE": "Classic noob NPC with top hat. Owns Jake\'s Workshop (crafting station). Quest giver for Summer 2024. Cannot be damaged.",
+    "STELLA": "NPC in the cave (accessed via parkour or Star Portal). Witch outfit, black eyes, white hair. Manages the Cauldron for lantern crafting. Give her Stella\'s Star for portal access. Cannot be damaged.",
+    "MARI": "Traveling merchant who spawns randomly for 3 minutes. Sells potions (Lucky, Speed, Mixed, Fortune Spoids, Lucky Penny, Rainbow Syrup, Gear A/B). Can be damaged.",
+    "JESTER": "Traveling merchant who spawns randomly for 3 minutes. Sells Runes, Oblivion Potions (for 5 Void Coins), Strange Potions, Random Potion Sacks, Stella\'s Candles, Merchant Tracker, biome items exchange, Dark Points currency. Can be damaged.",
+    "RIN": "Traveling merchant who spawns randomly. Sells Talismans (Sunstone, Moonstone, Day+Night, Overtime, Soul Collector\'s, Soul Master\'s). Unlock items by completing Rin\'s Trails. Can be damaged.",
+    "JACK THE PUMPKIN": "Halloween event merchant. Sells items for Pump Tokens (2024) or Bounty Medals (2025). Features Aura Hunts in 2025. Spawns during Pumpkin Moon biome.",
+    "CAPTAIN FLARG": "Beach NPC. Resets daily shop. Players sell fish for Fish Points to spend in his shop.",
+    "FISCHL": "NPC near the camping area. Daily rotating shop (1-5 star items). Also displays your current Daily Quests.",
+    "RIG": "Former Jake replacement NPC. Now located near the Obby fishing area. Gives a quest on first interaction.",
+    "BOB": "Sells Roblox UGC items related to Sol\'s RNG. Located near Rig\'s former spot.",
+    "DAVE": "NPC on 2nd island of The Limbo. Gives quests rewarding pages, recipes, and Darklight items. Dave\'s Hope buffs (x1.2–x2 Luck in Limbo).",
+    "EDEN": "NPC on 4th island of The Limbo. Spawn rate 1/50k every 2 minutes. Give him a Void Heart to receive the Eden aura.",
+    "UNNAMED ENTITY": "Unnamed NPC in the caves. Added in Eon 1-1. Got interaction in Eon 1-4.5. Speculated to be related to The Limbo.",
+    "VOICE FROM NOWHERE": "Summoned by Oblivion aura\'s \"Call\" ability. Initiates dialogue when interacted with. Says \"What did you call me for?\"",
+}
+
+WIKI_ITEMS = {
+    "LUCKY POTION": "Gives +25% Luck for 1 minute. Stackable for duration. Found on map, from Mari, Jester, or Fishing Shop.",
+    "SPEED POTION": "Gives +10% Roll Speed for 30 seconds. Stackable. Found on map, from Mari, Jester, or Fishing Shop.",
+    "FORTUNE POTION I": "Gives +50% Luck for 5 minutes. Craft: 10x Lucky Potion. Or from Daily Quests.",
+    "FORTUNE POTION II": "Gives +75% Luck for 5 minutes. Craft: 25x Lucky Potion. Cannot stack with Fortune I or III.",
+    "FORTUNE POTION III": "Gives +100% Luck for 5 minutes. Craft: 50x Lucky Potion.",
+    "HASTE POTION I": "Gives +20% Roll Speed for 5 minutes. Craft: 10x Speed Potion.",
+    "HASTE POTION II": "Gives +25% Roll Speed for 5 minutes. Craft: 25x Speed Potion.",
+    "HASTE POTION III": "Gives +30% Roll Speed for 5 minutes. Craft: 50x Speed Potion. Also from Fishing Shop.",
+    "HEAVENLY POTION": "Gives +15,000,000% Luck (+150,000) for ONE roll. Current craftable recipe requires Lucky Potions, Celestial, Exotic, Powered, and Quartz. Also drops during Dreamspace biome.",
+    "OBLIVION POTION": "Gives +60,000,000% Luck for ONE roll. Negates all buffs. Only way to get Oblivion (1/2000) and Memory (1/100). From Jester for 5 Void Coins.",
+    "WARP POTION": "Sets rolling cooldown to INSTANT for 2000 rolls. Craft: 1x Arcane, 5x Comet, 100x Powered, 200x Lunar, 1000x Speed Potion.",
+    "TRANSCENDENT POTION": "Sets rolling cooldown to INSTANT for 20000 rolls. Obtained from achievements (20M, 30M, 50M, 100M rolls) or Innovator Pack Vol-3.",
+    "POTION OF BOUND": "Gives +5,000,000% Luck for ONE roll. Craft: 1x Bounded, 3x Permafrost, 10x Lost Soul, 100x Lucky Potion. Also from Jester, Fischl, Fishing Shop.",
+    "GODLIKE POTION": "Gives +40,000,000% Luck for ONE roll. Requires all 3 Godly Potions + 600x Lucky Potion.",
+    "STRANGE CONTROLLER": "Changes the biome respecting normal rarities. 20-minute personal cooldown, 10-minute server cooldown. Craft using 7 biome-exclusive items (NULL?, Eternal Flame, Piece of Star, Curruptaine, Rainy Bottle, Icicle, Wind Essence).",
+    "BIOME RANDOMIZER": "Changes biome to random (equal chance for all except Glitched which stays at 1/30k). 35-minute personal cooldown, 20-minute server cooldown. Craft: 7 specific auras + 4x Strange Controller.",
+    "BIOME SELECTOR": "Changes biome on command (no Rare/Event biomes). 1-hour cooldown. Craft: 1x Biome Randomizer + 1x Cyber Technology.",
+    "VOID COIN": "Currency for Jester (used to buy Oblivion Potion for 5 Void Coins). Spawns at 0.02%/hour at night. Also from achievements and Mari for $500k.",
+    "RUNE OF EVERYTHING": "Lets you roll all biome-exclusive auras at native rarity for 5 minutes (except Glitched/Dreamspace auras). From Jester for 3000 Dark Points.",
+}
+
+WIKI_AURA_TIERS = {
+    "Basic": "1 in 1 – 1 in 999. Common auras like Common (1/2), Rare (1/16), Divinus (1/32 in Heaven).",
+    "Epic": "1 in 1,000 – 1 in 9,999. Examples: Undead (1/2k in Hell), Glacier (1/768 in Snowy).",
+    "Unique": "1 in 10,000 – 1 in 99,998. Examples: Starlight (1/10k in Starfall), Solar (1/5k Daytime), Lunar (1/5k Nighttime).",
+    "Legendary": "1 in 99,999 – 1 in 999,999. Examples: Exotic (1/99999), Comet (1/24k Singularity), Divinus: Angel (1/24k Heaven).",
+    "Mythic": "1 in 1M – 1 in 9.99M. Examples: Galaxy (1/1M Singularity), Arcane (1/1M), Hades (1/1.1M Hell).",
+    "Exalted": "1 in 10M – 1 in 99.9M. Examples: Starscourge (1/2M Starfall), Matrix (1/25M Cyberspace), Archangel (1/70M Heaven).",
+    "Glorious": "1 in 100M – 1 in 999M. Examples: Abyssal Hunter (1/100M Rainy), Atlas (1/90M Sandstorm), Pixelation (1/536M Cyberspace).",
+    "Transcendent": "1 in 1B – 1 in 7.5B. Examples: Leviathan (1/1.73B Rainy), Breakthrough (1/2B — cannot roll in Null!), Equinox (1/2.5B).",
+    "Dimensional": "1 in 7.5B+. Only: MasterHand (craftable). The rarest tier.",
+    "Challenged": "Biome-exclusive or condition-exclusive. Examples: Glitch (Glitched only), Oppression (Glitched only), Dreammetric (Dreamspace only), Astraios (Singularity only), Monarch (Corruption/Glitched only).",
+    "Challenged+": "Extremely rare condition-exclusive. Examples: Oblivion (from Oblivion Potion, 1/2000), Memory (from Oblivion Potion, 1/100), Eden (give Void Heart to Eden NPC).",
+    "Event": "Limited-time seasonal auras. Cannot be obtained outside their event period.",
+}
+
+def _wiki_biome_embed(name: str):
+    key  = name.upper().replace("-", " ").replace("_", " ")
+    # Try fuzzy match
+    data = None
+    for k, v in WIKI_BIOMES.items():
+        if key in k or k in key or k.startswith(key[:4]):
+            data = v; key = k; break
+    if not data:
+        return None, None
+    embed = discord.Embed(
+        title=f"{data['emoji']}  Sol\'s RNG Wiki — {key} Biome",
+        description=f"*{data['desc']}*",
+        color=data["color"],
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="🎲 Spawn Rate",   value=data["spawn"],    inline=True)
+    embed.add_field(name="⏱️ Duration",    value=data["duration"],  inline=True)
+    embed.add_field(name="🔄 Breakthrough", value=data["bt"],        inline=True)
+    embed.add_field(name="✨ Native Auras", value=data["auras"],     inline=False)
+    embed.add_field(name="📦 Biome Item",   value=data["item"],      inline=False)
+    embed.add_field(name="💡 Strategy Tip", value=f"*{data['tip']}*",inline=False)
+    embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Biomes"))
+    return embed, key
+
+def _wiki_event_embed(name: str):
+    key  = name.upper()
+    data = None
+    for k, v in WIKI_EVENTS.items():
+        if key in k or k in key:
+            data = v; key = k; break
+    if not data:
+        return None, None
+    embed = discord.Embed(
+        title=f"🎉  Sol\'s RNG Wiki — {key}",
+        description=data,
+        color=0xFF69B4,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Events"))
+    return embed, key
+
+def _wiki_npc_embed(name: str):
+    key  = name.upper()
+    data = None
+    for k, v in WIKI_NPCS.items():
+        if key in k or k in key:
+            data = v; key = k; break
+    if not data:
+        return None, None
+    embed = discord.Embed(
+        title=f"🧑  Sol\'s RNG Wiki — {key}",
+        description=data,
+        color=0x00FFA3,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  NPCs"))
+    return embed, key
+
+def _wiki_item_embed(name: str):
+    key  = name.upper()
+    data = None
+    for k, v in WIKI_ITEMS.items():
+        if key in k or k in key:
+            data = v; key = k; break
+    if not data:
+        return None, None
+    embed = discord.Embed(
+        title=f"🧪  Sol\'s RNG Wiki — {key}",
+        description=data,
+        color=0xF59E0B,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Items"))
+    return embed, key
+
+@bot.command(name="wiki", aliases=["w", "srng"])
+async def cmd_wiki(ctx, category: str = None, *, query: str = None):
+    """Sol\'s RNG wiki: !wiki biome <name> | !wiki aura <tier> | !wiki event <name> | !wiki npc <name> | !wiki item <name> | !wiki biomes | !wiki events | !wiki auras"""
+    if not _cmd_guard(ctx): return
+
+    if not category:
+        # Show wiki overview
+        embed = discord.Embed(
+            title="📖  Sol\'s RNG Wiki",
+            description=(
+                "**Welcome to the Sol\'s RNG Wiki branch!**\n\n"
+                "Use `!wiki <category> <name>` to look up game info:\n\u200b"
+            ),
+            color=0xFF69B4,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.add_field(name="🌍 `!wiki biome <name>`",  value="Look up a biome (spawn rate, auras, tips)", inline=False)
+        embed.add_field(name="✨ `!wiki aura <tier>`",   value="Look up an aura rarity tier (basic, epic, unique...)", inline=False)
+        embed.add_field(name="🎉 `!wiki event <name>`",  value="Look up a seasonal event and its content", inline=False)
+        embed.add_field(name="🧑 `!wiki npc <name>`",   value="Look up an NPC (Lime, Jake, Stella, Mari, Jester...)", inline=False)
+        embed.add_field(name="🧪 `!wiki item <name>`",  value="Look up a potion, gear, or item", inline=False)
+        embed.add_field(name="📋 List Commands:",
+            value="`!wiki biomes` — list all biomes\n`!wiki events` — list all events\n`!wiki auras` — aura rarity table",
+            inline=False)
+        embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki"))
+        await ctx.send(embed=embed)
+        return
+
+    cat = category.lower()
+
+    # LIST commands
+    if cat == "biomes":
+        lines = [f"{d[\'emoji\']} **{k}** — Spawn: {d[\'spawn\']} | Duration: {d[\'duration\']}" for k, d in WIKI_BIOMES.items()]
+        embed = discord.Embed(title="🌍  Sol\'s RNG — All Biomes", description="\n".join(lines), color=0x00E5FF, timestamp=datetime.now(timezone.utc))
+        embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Biomes List"))
+        await ctx.send(embed=embed)
+        return
+
+    if cat == "events":
+        lines = [f"🎉 **{k}**" for k in WIKI_EVENTS.keys()]
+        embed = discord.Embed(title="🎉  Sol\'s RNG — All Events", description="\n".join(lines), color=0xFF69B4, timestamp=datetime.now(timezone.utc))
+        embed.add_field(name="ℹ️ Usage", value="`!wiki event <name>` for details on any event", inline=False)
+        embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Events List"))
+        await ctx.send(embed=embed)
+        return
+
+    if cat == "auras":
+        embed = discord.Embed(title="✨  Sol\'s RNG — Aura Rarity Tiers", description="Aura rarity classifications from common to ultra-rare:", color=0xFFD700, timestamp=datetime.now(timezone.utc))
+        tier_colors = {"Basic":"🩶","Epic":"🟣","Unique":"🔵","Legendary":"🟡","Mythic":"🟠","Exalted":"🔴","Glorious":"🌟","Transcendent":"💫","Dimensional":"🌀","Challenged":"⚠️","Challenged+":"🚫","Event":"🎉"}
+        for tier, desc in WIKI_AURA_TIERS.items():
+            icon = tier_colors.get(tier, "▪️")
+            embed.add_field(name=f"{icon} **{tier}**", value=desc, inline=False)
+        embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Aura Tiers"))
+        await ctx.send(embed=embed)
+        return
+
+    if not query:
+        await ctx.send(embed=discord.Embed(
+            description=f"❌ Please provide a name. Example: `!wiki {cat} singularity`",
+            color=0xFF2A2A))
+        return
+
+    # LOOKUP commands
+    if cat in ("biome", "b"):
+        embed, matched = _wiki_biome_embed(query)
+        if not embed:
+            names = ", ".join(f"`{k.title()}`" for k in WIKI_BIOMES.keys())
+            await ctx.send(embed=discord.Embed(description=f"❌ Biome `{query}` not found.\n**Available:** {names}", color=0xFF2A2A))
+            return
+        await ctx.send(embed=embed)
+
+    elif cat in ("event", "e"):
+        embed, matched = _wiki_event_embed(query)
+        if not embed:
+            names = ", ".join(f"`{k.title()}`" for k in list(WIKI_EVENTS.keys())[:10])
+            await ctx.send(embed=discord.Embed(description=f"❌ Event `{query}` not found.\nUse `!wiki events` to see all events.", color=0xFF2A2A))
+            return
+        await ctx.send(embed=embed)
+
+    elif cat in ("npc", "n"):
+        embed, matched = _wiki_npc_embed(query)
+        if not embed:
+            names = ", ".join(f"`{k.title()}`" for k in WIKI_NPCS.keys())
+            await ctx.send(embed=discord.Embed(description=f"❌ NPC `{query}` not found.\n**Available:** {names}", color=0xFF2A2A))
+            return
+        await ctx.send(embed=embed)
+
+    elif cat in ("item", "i", "potion"):
+        embed, matched = _wiki_item_embed(query)
+        if not embed:
+            names = ", ".join(f"`{k.title()}`" for k in list(WIKI_ITEMS.keys())[:10])
+            await ctx.send(embed=discord.Embed(description=f"❌ Item `{query}` not found.\nTry: {names}...", color=0xFF2A2A))
+            return
+        await ctx.send(embed=embed)
+
+    elif cat in ("aura", "a"):
+        key  = query.upper()
+        data = None
+        for k, v in WIKI_AURA_TIERS.items():
+            if key in k.upper() or k.upper() in key:
+                data = v; key = k; break
+        if not data:
+            embed = discord.Embed(
+                title=f"✨  Sol\'s RNG Wiki — Aura Search: {query}",
+                description=(
+                    f"Could not find a specific aura tier matching `{query}`.\n\n"
+                    f"**Use `!wiki auras`** to see all rarity tiers, or search for a biome with\n"
+                    f"`!wiki biome <name>` to see that biome\'s native auras."
+                ),
+                color=0xFFD700,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Auras"))
+            await ctx.send(embed=embed)
+        else:
+            embed = discord.Embed(
+                title=f"✨  Sol\'s RNG Wiki — {key} Tier",
+                description=data,
+                color=0xFFD700,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.set_footer(text=_zite_footer("Sol\'s RNG Wiki  •  Aura Tiers"))
+            await ctx.send(embed=embed)
+    else:
+        await ctx.send(embed=discord.Embed(
+            description=(
+                f"❌ Unknown category `{category}`.\n\n"
+                "**Valid categories:** `biome`, `aura`, `event`, `npc`, `item`\n"
+                "**List commands:** `!wiki biomes`, `!wiki events`, `!wiki auras`\n\n"
+                "Or just use `!wiki` for the full overview."
+            ),
+            color=0xFF2A2A))
+
+
 
 # ── Boot ──────────────────────────────────────────────────────────────────────
 threading.Thread(target=keep_alive, daemon=True).start()
