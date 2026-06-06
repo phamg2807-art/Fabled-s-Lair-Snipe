@@ -1,24 +1,3 @@
-# ════════════════════════════════════════════════════════════════════════════════
-#  ZITE TELEMETRY BOT  —  Full Rewrite
-#  Sections:
-#   1.  Imports & Logging
-#   2.  Intents & Bot
-#   3.  Channel IDs & Config
-#   4.  Global State
-#   5.  Regex & Lookups
-#   6.  Cosmetics (colors / emojis / tips)
-#   7.  Core Helpers
-#   8.  Persistence (local + cloud)
-#   9.  Metrics Payload
-#  10.  Embed Builders  (biome / merchant / departure / extended-log)
-#  11.  Merchant Departure Watchdog
-#  12.  Auto-Pin Error System
-#  13.  website-output → embed-output Auto-Formatter
-#  14.  Web Server (dashboard + /api/metrics + /api/zite)
-#  15.  Core Message Processing
-#  16.  DISCORD COMMANDS  (30+)
-#  17.  Boot
-# ════════════════════════════════════════════════════════════════════════════════
 
 # ── 1. Imports & Logging ──────────────────────────────────────────────────────
 import discord
@@ -880,12 +859,7 @@ def _resolve_active_event(cid_str, account_identity, event_name):
             return k, ev, ev["account_identity"]
     return key, None, account_identity
 
-# ── CHANGED: Only send to origin channel; no secondary log/embed-output embeds ──
-async def _dispatch_embeds(origin_ch, embed, log_embed):
-    try:
-        await origin_ch.send(embed=embed)
-    except Exception as e:
-        log.error(f"Embed dispatch error: {e}")
+# ── CHANGED: Embed dispatch removed — bot no longer sends biome/merchant embeds ──
 
 async def _process_merchant(message, combined_lower, is_start, cid_str,
                             now_iso, guild_name, roblox_link, link_vector,
@@ -952,12 +926,7 @@ async def _process_merchant(message, combined_lower, is_start, cid_str,
     print(f"   Duration: {duration_str}  | {exec_ms:.1f}ms | Active: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
     print("-" * 80)
 
-    started_at_val = active_live_events.get(event_key, {}).get("started_at", now_iso)
-    embed = _build_merchant_embed(merchant_name, event_type, message.channel.name, guild_name,
-                                  account_identity, roblox_link, link_vector, duration_str,
-                                  exec_ms, macro_capacity, metrics, started_at=started_at_val)
-    log_embed = None  # No longer used — secondary channel dispatch removed
-    await _dispatch_embeds(message.channel, embed, log_embed)
+    # ── Embed dispatch removed: bot no longer sends merchant embeds to channels ──
 
 async def _process_biome(message, combined_text, combined_lower, is_start,
                          cid_str, now_iso, guild_name, roblox_link, link_vector,
@@ -1024,12 +993,7 @@ async def _process_biome(message, combined_text, combined_lower, is_start,
     print(f"   Duration: {duration_str}  | {exec_ms:.1f}ms | Active: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
     print("-" * 80)
 
-    started_at_val = active_live_events.get(event_key, {}).get("started_at", now_iso)
-    embed = _build_biome_embed(biome_name, event_type, message.channel.name, guild_name,
-                               account_identity, roblox_link, link_vector, duration_str,
-                               exec_ms, macro_capacity, metrics, started_at=started_at_val)
-    log_embed = None  # No longer used — secondary channel dispatch removed
-    await _dispatch_embeds(message.channel, embed, log_embed)
+    # ── Embed dispatch removed: bot no longer sends biome embeds to channels ──
 
 # ── 16. DISCORD COMMANDS ──────────────────────────────────────────────────────
 
