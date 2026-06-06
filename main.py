@@ -526,56 +526,6 @@ def _build_departure_embed(merchant_name, channel_name, account_id,
     embed.set_footer(text=_zite_footer("Departure Alert"))
     return embed
 
-def _build_extended_biome_log(biome_name, event_type, channel_name, guild_name,
-                               account_identity, roblox_link, link_vector,
-                               duration_str, exec_ms, macro_capacity, metrics) -> discord.Embed:
-    is_start = event_type == "STARTED"
-    emoji    = BIOME_EMOJIS.get(biome_name, "❓")
-    color    = BIOME_COLORS.get(biome_name, 0x778899) if is_start else 0x2C2F33
-    ts       = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    icon     = "🟢" if is_start else "🔴"
-    lines = [
-        f"`{ts} UTC`  {icon}  **{biome_name}** — {event_type}",
-        f"Channel `#{channel_name}` | Server `{guild_name}` | Account `{account_identity}`",
-        f"Capacity `{macro_capacity} accs` | Duration `{duration_str}` | Latency `{exec_ms:.1f}ms`",
-        f"Active Feeds `{metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}` | Total Biomes `{metrics['telemetry']['grand_total_biomes']}`",
-    ]
-    if roblox_link and roblox_link != "None":
-        lines.append(f"[🔗 Server Link]({roblox_link}) *(via {link_vector})*")
-    embed = discord.Embed(
-        title=f"{emoji} BIOME LOG  •  {biome_name}",
-        description="\n".join(lines),
-        color=color,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.set_footer(text=_zite_footer(f"Extended Log  •  {biome_name}"))
-    return embed
-
-def _build_extended_merchant_log(merchant_name, event_type, channel_name, guild_name,
-                                  account_identity, roblox_link, link_vector,
-                                  duration_str, exec_ms, macro_capacity, metrics) -> discord.Embed:
-    is_start = event_type == "SPAWNED"
-    emoji    = MERCHANT_EMOJIS.get(merchant_name, "🏪")
-    color    = MERCHANT_COLORS.get(merchant_name, 0xF59E0B) if is_start else 0x2C2F33
-    ts       = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    icon     = "🟢" if is_start else "🔴"
-    lines = [
-        f"`{ts} UTC`  {icon}  **{merchant_name}** — {event_type}",
-        f"Channel `#{channel_name}` | Server `{guild_name}` | Account `{account_identity}`",
-        f"Capacity `{macro_capacity} accs` | Duration `{duration_str}` | Latency `{exec_ms:.1f}ms`",
-        f"Active Feeds `{metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}` | Total Merchants `{metrics['telemetry']['grand_total_merchants']}`",
-    ]
-    if roblox_link and roblox_link != "None":
-        lines.append(f"[🔗 Server Link]({roblox_link}) *(via {link_vector})*")
-    embed = discord.Embed(
-        title=f"{emoji} MERCHANT LOG  •  {merchant_name}",
-        description="\n".join(lines),
-        color=color,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.set_footer(text=_zite_footer(f"Extended Log  •  {merchant_name}"))
-    return embed
-
 def _build_plain_to_rich_embed(message: discord.Message) -> discord.Embed:
     """Convert a plain-text message from website-output into a rich embed."""
     content = message.content or ""
@@ -633,9 +583,6 @@ async def send_merchant_departure_warning(event_key, ev, seconds_left):
     if dest:
         coros.append(dest.send(embed=embed))
         log.info(f"DEPARTURE WARNING → #{dest.name} | {merchant_name} | ~{seconds_left}s")
-    log_ch = _get_extended_log_channel()
-    if log_ch:
-        coros.append(log_ch.send(embed=embed))
     if coros:
         await asyncio.gather(*coros, return_exceptions=True)
 
@@ -653,6 +600,27 @@ async def merchant_departure_watchdog():
 
 @merchant_departure_watchdog.before_loop
 async def _before_watchdog():
+    await bot.wait_until_ready()
+
+# ── NEW: Auto-expire stale live events after 20 minutes ──────────────────────
+
+@tasks.loop(seconds=30)
+async def live_event_cleanup():
+    """Remove live events that have been running longer than 20 minutes."""
+    now = datetime.now(timezone.utc)
+    to_remove = []
+    for key, ev in list(active_live_events.items()):
+        elapsed = (now - datetime.fromisoformat(ev["started_at"])).total_seconds()
+        if elapsed > 1200:  # 20 minutes = 1200 seconds
+            to_remove.append(key)
+    for key in to_remove:
+        ev = active_live_events.pop(key, None)
+        _departure_warned.discard(key)
+        if ev:
+            log.info(f"AUTO-EXPIRE: Removed stale event '{ev['name']}' after 20min (key={key})")
+
+@live_event_cleanup.before_loop
+async def _before_cleanup():
     await bot.wait_until_ready()
 
 # ── 12. Auto-Pin Error System ─────────────────────────────────────────────────
@@ -912,18 +880,12 @@ def _resolve_active_event(cid_str, account_identity, event_name):
             return k, ev, ev["account_identity"]
     return key, None, account_identity
 
+# ── CHANGED: Only send to origin channel; no secondary log/embed-output embeds ──
 async def _dispatch_embeds(origin_ch, embed, log_embed):
-    coros = [origin_ch.send(embed=embed)]
-    log_ch = _get_extended_log_channel()
-    if log_ch:
-        coros.append(log_ch.send(embed=log_embed))
-    embed_ch = _get_embed_output_channel()
-    if embed_ch:
-        coros.append(embed_ch.send(embed=log_embed))
-    results = await asyncio.gather(*coros, return_exceptions=True)
-    for r in results:
-        if isinstance(r, Exception):
-            log.error(f"Embed dispatch error: {r}")
+    try:
+        await origin_ch.send(embed=embed)
+    except Exception as e:
+        log.error(f"Embed dispatch error: {e}")
 
 async def _process_merchant(message, combined_lower, is_start, cid_str,
                             now_iso, guild_name, roblox_link, link_vector,
@@ -974,7 +936,6 @@ async def _process_merchant(message, combined_lower, is_start, cid_str,
     exec_ms        = (time.perf_counter() - t0) * 1000
     macro_capacity = calculate_macro_capacity(merchant_name)
 
-    # ── Structured log line for Zite parsing ─────────────────────────────
     print(f"[ZITE_DATA] type=merchant event={event_type} name={merchant_name} "
           f"channel={message.channel.name} account={account_identity} "
           f"duration={duration_str} capacity={macro_capacity} "
@@ -983,7 +944,6 @@ async def _process_merchant(message, combined_lower, is_start, cid_str,
           f"grand_merchants={metrics['telemetry']['grand_total_merchants']} "
           f"live={metrics['telemetry']['active_live_events']}")
 
-    # ── Human-readable log block ──────────────────────────────────────────
     print(f"\n[MERCHANT] {event_type} | {merchant_name} | {account_identity}")
     print(f"   Channel : #{message.channel.name}  ({guild_name})")
     if roblox_link:
@@ -996,9 +956,7 @@ async def _process_merchant(message, combined_lower, is_start, cid_str,
     embed = _build_merchant_embed(merchant_name, event_type, message.channel.name, guild_name,
                                   account_identity, roblox_link, link_vector, duration_str,
                                   exec_ms, macro_capacity, metrics, started_at=started_at_val)
-    log_embed = _build_extended_merchant_log(merchant_name, event_type, message.channel.name, guild_name,
-                                             account_identity, roblox_link, link_vector, duration_str,
-                                             exec_ms, macro_capacity, metrics)
+    log_embed = None  # No longer used — secondary channel dispatch removed
     await _dispatch_embeds(message.channel, embed, log_embed)
 
 async def _process_biome(message, combined_text, combined_lower, is_start,
@@ -1050,7 +1008,6 @@ async def _process_biome(message, combined_text, combined_lower, is_start,
     exec_ms        = (time.perf_counter() - t0) * 1000
     macro_capacity = calculate_macro_capacity(biome_name)
 
-    # ── Structured log line for Zite parsing ─────────────────────────────
     print(f"[ZITE_DATA] type=biome event={event_type} name={biome_name} "
           f"channel={message.channel.name} account={account_identity} "
           f"duration={duration_str} capacity={macro_capacity} "
@@ -1059,7 +1016,6 @@ async def _process_biome(message, combined_text, combined_lower, is_start,
           f"grand_biomes={metrics['telemetry']['grand_total_biomes']} "
           f"live={metrics['telemetry']['active_live_events']}")
 
-    # ── Human-readable log block ──────────────────────────────────────────
     print(f"\n[BIOME] {event_type} | {biome_name} | {account_identity}")
     print(f"   Channel : #{message.channel.name}  ({guild_name})")
     if roblox_link:
@@ -1072,9 +1028,7 @@ async def _process_biome(message, combined_text, combined_lower, is_start,
     embed = _build_biome_embed(biome_name, event_type, message.channel.name, guild_name,
                                account_identity, roblox_link, link_vector, duration_str,
                                exec_ms, macro_capacity, metrics, started_at=started_at_val)
-    log_embed = _build_extended_biome_log(biome_name, event_type, message.channel.name, guild_name,
-                                          account_identity, roblox_link, link_vector, duration_str,
-                                          exec_ms, macro_capacity, metrics)
+    log_embed = None  # No longer used — secondary channel dispatch removed
     await _dispatch_embeds(message.channel, embed, log_embed)
 
 # ── 16. DISCORD COMMANDS ──────────────────────────────────────────────────────
@@ -2003,6 +1957,8 @@ async def on_ready():
     log.info(f"SYSTEM ONLINE — {bot.user} ready.")
     if not merchant_departure_watchdog.is_running():
         merchant_departure_watchdog.start()
+    if not live_event_cleanup.is_running():
+        live_event_cleanup.start()
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -2332,25 +2288,25 @@ WIKI_EVENTS = {
     "CHRISTMAS 2025": "22 new auras. Aurora biome (1/50k/s or via Glowing Snow Globe during Snowy). Snowflake currency, Memory Match game, Christmas Roulette. Dream Traveler (1/1B Aurora). Season Pass IV.",
     "VALENTINES 2026": "Added Velvet (via quest) and Symphony: Bloomed (1/375M). 1 Lime quest.",
     "EASTER 2026": "15 new auras. Eggland biome (replaces Normal). Egg drop system, Easter Points currency. Sky Festival (1/2B), Eggore (1/700M). Season Pass VI.",
-    "APRIL FOOLS 2026": "15 new auras. Includes Equinox: You Are An Idiot (1/2.5B), A Fool\'s Experience (1/1B), Pukeko: P.U.K.E.K.O.G.O.D. (1/1B). Previous pukeko/Troll brought back.",
+    "APRIL FOOLS 2026": "15 new auras. Includes Equinox: You Are An Idiot (1/2.5B), A Fool's Experience (1/1B), Pukeko: P.U.K.E.K.O.G.O.D. (1/1B). Previous pukeko/Troll brought back.",
 }
 
 WIKI_NPCS = {
-    "LIME": "Yellow-skinned NPC with black hair and white cat hoodie. Quest giver for all major events (Valentine\'s, Summer, Halloween, Christmas, Easter). Cannot be damaged.",
-    "JAKE": "Classic noob NPC with top hat. Owns Jake\'s Workshop (crafting station). Quest giver for Summer 2024. Cannot be damaged.",
-    "STELLA": "NPC in the cave (accessed via parkour or Star Portal). Witch outfit, black eyes, white hair. Manages the Cauldron for lantern crafting. Give her Stella\'s Star for portal access. Cannot be damaged.",
+    "LIME": "Yellow-skinned NPC with black hair and white cat hoodie. Quest giver for all major events (Valentine's, Summer, Halloween, Christmas, Easter). Cannot be damaged.",
+    "JAKE": "Classic noob NPC with top hat. Owns Jake's Workshop (crafting station). Quest giver for Summer 2024. Cannot be damaged.",
+    "STELLA": "NPC in the cave (accessed via parkour or Star Portal). Witch outfit, black eyes, white hair. Manages the Cauldron for lantern crafting. Give her Stella's Star for portal access. Cannot be damaged.",
     "MARI": "Traveling merchant who spawns randomly for 3 minutes. Sells potions (Lucky, Speed, Mixed, Fortune Spoids, Lucky Penny, Rainbow Syrup, Gear A/B). Can be damaged.",
-    "JESTER": "Traveling merchant who spawns randomly for 3 minutes. Sells Runes, Oblivion Potions (for 5 Void Coins), Strange Potions, Random Potion Sacks, Stella\'s Candles, Merchant Tracker, biome items exchange, Dark Points currency. Can be damaged.",
-    "RIN": "Traveling merchant who spawns randomly. Sells Talismans (Sunstone, Moonstone, Day+Night, Overtime, Soul Collector\'s, Soul Master\'s). Unlock items by completing Rin\'s Trails. Can be damaged.",
+    "JESTER": "Traveling merchant who spawns randomly for 3 minutes. Sells Runes, Oblivion Potions (for 5 Void Coins), Strange Potions, Random Potion Sacks, Stella's Candles, Merchant Tracker, biome items exchange, Dark Points currency. Can be damaged.",
+    "RIN": "Traveling merchant who spawns randomly. Sells Talismans (Sunstone, Moonstone, Day+Night, Overtime, Soul Collector's, Soul Master's). Unlock items by completing Rin's Trails. Can be damaged.",
     "JACK THE PUMPKIN": "Halloween event merchant. Sells items for Pump Tokens (2024) or Bounty Medals (2025). Features Aura Hunts in 2025. Spawns during Pumpkin Moon biome.",
     "CAPTAIN FLARG": "Beach NPC. Resets daily shop. Players sell fish for Fish Points to spend in his shop.",
     "FISCHL": "NPC near the camping area. Daily rotating shop (1-5 star items). Also displays your current Daily Quests.",
     "RIG": "Former Jake replacement NPC. Now located near the Obby fishing area. Gives a quest on first interaction.",
-    "BOB": "Sells Roblox UGC items related to Sol\'s RNG. Located near Rig\'s former spot.",
-    "DAVE": "NPC on 2nd island of The Limbo. Gives quests rewarding pages, recipes, and Darklight items. Dave\'s Hope buffs (x1.2–x2 Luck in Limbo).",
+    "BOB": "Sells Roblox UGC items related to Sol's RNG. Located near Rig's former spot.",
+    "DAVE": "NPC on 2nd island of The Limbo. Gives quests rewarding pages, recipes, and Darklight items. Dave's Hope buffs (x1.2–x2 Luck in Limbo).",
     "EDEN": "NPC on 4th island of The Limbo. Spawn rate 1/50k every 2 minutes. Give him a Void Heart to receive the Eden aura.",
     "UNNAMED ENTITY": "Unnamed NPC in the caves. Added in Eon 1-1. Got interaction in Eon 1-4.5. Speculated to be related to The Limbo.",
-    "VOICE FROM NOWHERE": "Summoned by Oblivion aura\'s \"Call\" ability. Initiates dialogue when interacted with. Says \"What did you call me for?\"",
+    "VOICE FROM NOWHERE": "Summoned by Oblivion aura's \"Call\" ability. Initiates dialogue when interacted with. Says \"What did you call me for?\"",
 }
 
 WIKI_ITEMS = {
