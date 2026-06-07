@@ -1,4 +1,3 @@
-
 # ── 1. Imports & Logging ──────────────────────────────────────────────────────
 import discord
 from discord.ext import commands, tasks
@@ -41,17 +40,16 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 # ── 3. Channel IDs & Config ───────────────────────────────────────────────────
 DATA_STORE_PATH = "metrics_store.json"
 
-# Detection containers (guilds / categories whose channels are auto-monitored)
 AUTO_DETECT_CONTAINERS    = {1501595856493740162, 1511360799996907710, 1509915924663238776}
 MISSING_CHANNEL_WHITELIST = {1511359721632694363, 1511365304624877568,
                               1511335720239759361, 1511362877322432792}
 dynamic_detected_channels: set = set()
 
-# Special output channels
-EXTENDED_LOG_CHANNEL_ID  = 1512287503141306570   # website-output  (plain auto text)
-CMD_CHANNEL_ID           = 1512289164786401500   # website-cmds    (bot commands)
-EMBED_OUTPUT_CHANNEL_ID  = 1512290157179703426   # embed-output    (rich embeds)
-WELCOME_CHANNEL_ID       = 1512300518695895120   # server-output   (new member welcomes)
+EXTENDED_LOG_CHANNEL_ID  = 1512287503141306570
+CMD_CHANNEL_ID           = 1512289164786401500
+EMBED_OUTPUT_CHANNEL_ID  = 1512290157179703426
+WELCOME_CHANNEL_ID       = 1512300518695895120
+SERVER_OUTPUT_CHANNEL_ID = 1512300518695895120
 
 MERCHANT_DEPART_CHANNEL_ID = os.getenv("MERCHANT_DEPART_CHANNEL_ID")
 MERCHANT_WARN_BEFORE_S     = 30
@@ -59,6 +57,10 @@ _departure_warned: set     = set()
 
 SAVE_INTERVAL_S   = 15
 BACKUP_INTERVAL_S = 60
+
+# ── Role IDs ──────────────────────────────────────────────────────────────────
+WANTS_TO_MACRO_ROLE_ID     = 1509772223932796928
+MACRO_TRAIL_VERIFYING_ROLE = 1509768047127429170
 
 # ── 4. Global State ───────────────────────────────────────────────────────────
 biome_counts:       dict  = {}
@@ -68,16 +70,24 @@ active_live_events: dict  = {}
 _last_save_time:    float = 0.0
 _last_backup_time:  float = 0.0
 
+# Track claimed macro applications: message_id -> user_id
+claimed_applications: dict = {}
+
 # ── 5. Regex & Lookups ────────────────────────────────────────────────────────
 ROBLOX_LINK_RE = re.compile(r"https://www\.roblox\.com/share\?\S+")
+ROBLOX_PRIVATE_RE = re.compile(
+    r"https?://www\.roblox\.com/(?:games/|share\?)[^\s<>\"']+(?:privateServerLinkCode|AccessCode)[^\s<>\"']*",
+    re.IGNORECASE,
+)
+
 BIOME_MATCH_RE = re.compile(
     r"(?:Biome\s+(?:Started|Ended)(?:\s*[:\-]\s*))([A-Z_]+)", re.IGNORECASE
 )
 EVENT_START_RE = re.compile(
-    r"\b(started|start|spawned|arrived|appeared|has arrived|is here)\b", re.IGNORECASE
+    r"\b(started|start|spawned|arrived|appeared|has arrived|is here|arrive)\b", re.IGNORECASE
 )
 EVENT_END_RE = re.compile(
-    r"\b(ended|end|despawned|left|gone|has left|disappeared|expired|timed out)\b",
+    r"\b(ended|end|despawned|left|gone|has left|disappeared|expired|timed out|depart)\b",
     re.IGNORECASE,
 )
 CLEAN_WORDS_RE = re.compile(r"\b[A-Z]{4,}\b")
@@ -85,19 +95,22 @@ CLEAN_WORDS_RE = re.compile(r"\b[A-Z]{4,}\b")
 KNOWN_BIOMES = [
     "SINGULARITY","GLITCHED","DREAMSPACE","CYBERSPACE",
     "STARFALL","CORRUPTION","WINDY","SNOWY","RAINY","HELL","NORMAL","SAND",
+    "SANDSTORM","HEAVEN","NULL","BLAZING",
 ]
 STOP_WORDS = frozenset({
     "START","STARTED","ENDED","BIOME","TIME","INVITE",
-    "SERVER","PRIVATE","LINK","WARNING",
+    "SERVER","PRIVATE","LINK","WARNING","DETECTION","SOURCE",
+    "JOIN","ARRIVED","ISLAND","MERCHANT",
 })
 
 EVENT_SESSION_LIMITS: dict = {
     "WINDY": 120, "SNOWY": 120, "RAINY": 120, "SAND STORM": 650,
-    "HELL": 666, "STARFALL": 650, "HEAVEN": 240, "NULL": 99,
-    "NORMAL": 60, "GLITCHED": 164, "DREAMSPACE": 192, "CYBERSPACE": 720,
-    "SINGULARITY": 1200,
+    "SANDSTORM": 650, "HELL": 666, "STARFALL": 650, "HEAVEN": 240,
+    "NULL": 99, "NORMAL": 60, "GLITCHED": 164, "DREAMSPACE": 192,
+    "CYBERSPACE": 720, "SINGULARITY": 1200, "BLAZING SUN": 300,
     "MARI (MERCHANT)": 180, "JESTER (MERCHANT)": 180, "RIN (MERCHANT)": 180,
     "MYSTERIOUS MERCHANT": 180, "TRAVELING MERCHANT": 180, "MERCHANT": 180,
+    "BLACK MERCHANT": 180,
 }
 
 # ── 6. Cosmetics ──────────────────────────────────────────────────────────────
@@ -105,21 +118,25 @@ BIOME_COLORS = {
     "SINGULARITY":0x9B59B6,"GLITCHED":0x00FF88,"DREAMSPACE":0xFF69B4,
     "CYBERSPACE":0x00E5FF,"STARFALL":0xFFD700,"CORRUPTION":0x8B0000,
     "WINDY":0xADD8E6,"SNOWY":0xE0F7FA,"RAINY":0x4682B4,"HELL":0xFF2A2A,
-    "SAND STORM":0xC2A35A,"HEAVEN":0xFFFACD,"NORMAL":0x778899,
+    "SAND STORM":0xC2A35A,"SANDSTORM":0xC2A35A,"HEAVEN":0xFFFACD,
+    "NORMAL":0x778899,"NULL":0x36393F,"BLAZING SUN":0xFF8C00,
 }
 BIOME_EMOJIS = {
     "SINGULARITY":"🌀","GLITCHED":"⚠️","DREAMSPACE":"💤","CYBERSPACE":"🖥️",
     "STARFALL":"🌠","CORRUPTION":"☠️","WINDY":"💨","SNOWY":"❄️","RAINY":"🌧️",
-    "HELL":"🔥","SAND STORM":"🏜️","HEAVEN":"☁️","NORMAL":"🌿","UNKNOWN":"❓",
+    "HELL":"🔥","SAND STORM":"🏜️","SANDSTORM":"🏜️","HEAVEN":"☁️",
+    "NORMAL":"🌿","NULL":"⬛","BLAZING SUN":"☀️","UNKNOWN":"❓",
 }
 MERCHANT_COLORS = {
     "MARI (MERCHANT)":0xFF69B4,"JESTER (MERCHANT)":0xFFA500,
     "RIN (MERCHANT)":0x00CED1,"MYSTERIOUS MERCHANT":0x6A0DAD,
     "TRAVELING MERCHANT":0x228B22,"MERCHANT":0xF59E0B,
+    "BLACK MERCHANT":0x1a1a2e,
 }
 MERCHANT_EMOJIS = {
     "MARI (MERCHANT)":"🌸","JESTER (MERCHANT)":"🃏","RIN (MERCHANT)":"🎐",
     "MYSTERIOUS MERCHANT":"🔮","TRAVELING MERCHANT":"🧳","MERCHANT":"🏪",
+    "BLACK MERCHANT":"🖤",
 }
 BIOME_TIPS = {
     "SINGULARITY":"Rarest biome — extremely high value. Queue **all** accounts immediately.",
@@ -133,8 +150,11 @@ BIOME_TIPS = {
     "RAINY":"Short 2-minute window. Fast-cycle accounts only.",
     "HELL":"Exactly 11m 06s. High-damage environment — use tank builds.",
     "SAND STORM":"Extended ~10m window. Great for farming mid-tier resources.",
+    "SANDSTORM":"Extended ~10m window. Great for farming mid-tier resources.",
     "HEAVEN":"4-minute soft window. Peaceful, bonus XP multiplier.",
     "NORMAL":"Standard biome. Rotate accounts freely.",
+    "NULL":"99-second window. Breakthrough is essentially impossible here.",
+    "BLAZING SUN":"Daytime-only biome. 5-minute window.",
 }
 MERCHANT_TIPS = {
     "MARI (MERCHANT)":"Mari stocks rare accessories. Prioritise accounts needing gear upgrades.",
@@ -143,9 +163,124 @@ MERCHANT_TIPS = {
     "MYSTERIOUS MERCHANT":"Unknown stock — high-priority, treat as top-tier spawn.",
     "TRAVELING MERCHANT":"Rotating inventory. Check stock before committing all accounts.",
     "MERCHANT":"Standard merchant. Queue accounts with available currency.",
+    "BLACK MERCHANT":"Rare black merchant — appears with low probability. High-priority spawn.",
 }
 
-# ── 7. Core Helpers ───────────────────────────────────────────────────────────
+# ── 7. Macro Source Detection ─────────────────────────────────────────────────
+# Each entry: (name, patterns_to_match_in_combined_text, link_field_names)
+MACRO_SOURCE_PATTERNS = [
+    # Coteab / Noteab Macro — "Mari has arrived!" title + "Detection Source" field + "Coteab Macro" footer
+    {
+        "name": "Coteab Macro",
+        "title_patterns": [r"has arrived", r"biome started", r"biome ended",
+                           r"merchant spawned", r"merchant despawned"],
+        "field_patterns": [r"detection source", r"coteab macro", r"noteab macro"],
+        "link_fields": ["join server", "private server", "server link"],
+        "footer_patterns": [r"coteab macro", r"noteab macro", r"coteab v"],
+        "private_server_patterns": [r"private server", r"ps link", r"join server"],
+    },
+    # MultiScope V1/V2
+    {
+        "name": "MultiScope",
+        "title_patterns": [r"multiscope", r"biome alert", r"merchant alert"],
+        "field_patterns": [r"multiscope", r"scope"],
+        "link_fields": ["private server", "server link", "join"],
+        "footer_patterns": [r"multiscope"],
+        "private_server_patterns": [r"private server", r"server link"],
+    },
+    # SolsScope
+    {
+        "name": "SolsScope",
+        "title_patterns": [r"solsscope", r"sols scope"],
+        "field_patterns": [r"solsscope", r"sols scope"],
+        "link_fields": ["private server", "server link"],
+        "footer_patterns": [r"solsscope"],
+        "private_server_patterns": [r"private server"],
+    },
+    # FishScope
+    {
+        "name": "FishScope",
+        "title_patterns": [r"fishscope", r"fish scope"],
+        "field_patterns": [r"fishscope"],
+        "link_fields": ["private server", "server link"],
+        "footer_patterns": [r"fishscope"],
+        "private_server_patterns": [r"private server"],
+    },
+    # FishSol
+    {
+        "name": "FishSol",
+        "title_patterns": [r"fishsol", r"fish sol"],
+        "field_patterns": [r"fishsol"],
+        "link_fields": ["private server", "server link"],
+        "footer_patterns": [r"fishsol"],
+        "private_server_patterns": [r"private server"],
+    },
+    # Maxstellar
+    {
+        "name": "Maxstellar",
+        "title_patterns": [r"maxstellar"],
+        "field_patterns": [r"maxstellar"],
+        "link_fields": ["private server", "server link"],
+        "footer_patterns": [r"maxstellar"],
+        "private_server_patterns": [r"private server"],
+    },
+    # Radiance
+    {
+        "name": "Radiance Macro",
+        "title_patterns": [r"radiance macro", r"radiance"],
+        "field_patterns": [r"radiance"],
+        "link_fields": ["private server", "server link"],
+        "footer_patterns": [r"radiance"],
+        "private_server_patterns": [r"private server"],
+    },
+    # DroidScope
+    {
+        "name": "DroidScope",
+        "title_patterns": [r"droidscope", r"droid scope"],
+        "field_patterns": [r"droidscope"],
+        "link_fields": ["private server", "server link"],
+        "footer_patterns": [r"droidscope"],
+        "private_server_patterns": [r"private server"],
+    },
+    # Slaoq
+    {
+        "name": "Slaoq Sniper",
+        "title_patterns": [r"slaoq", r"sols rng sniper"],
+        "field_patterns": [r"slaoq"],
+        "link_fields": ["private server", "server link"],
+        "footer_patterns": [r"slaoq"],
+        "private_server_patterns": [r"private server"],
+    },
+    # RNGsus
+    {
+        "name": "RNGsus",
+        "title_patterns": [r"rngsus"],
+        "field_patterns": [r"rngsus"],
+        "link_fields": ["private server", "server link"],
+        "footer_patterns": [r"rngsus"],
+        "private_server_patterns": [r"private server"],
+    },
+    # StayActive
+    {
+        "name": "StayActive",
+        "title_patterns": [r"stayactive", r"stay active"],
+        "field_patterns": [r"stayactive", r"stay active"],
+        "link_fields": ["private server", "server link"],
+        "footer_patterns": [r"stayactive"],
+        "private_server_patterns": [r"private server"],
+    },
+    # Oyster Detector
+    {
+        "name": "Oyster Detector",
+        "title_patterns": [r"oyster"],
+        "field_patterns": [r"oyster"],
+        "link_fields": ["private server", "server link"],
+        "footer_patterns": [r"oyster"],
+        "private_server_patterns": [r"private server"],
+    },
+]
+
+# ── 8. Core Helpers ───────────────────────────────────────────────────────────
 
 def calculate_macro_capacity(event_name: str, avg: int = 40, buf: int = 15):
     total = EVENT_SESSION_LIMITS.get(event_name.upper())
@@ -215,7 +350,6 @@ def _active_webhook_count() -> int:
     )
 
 def _get_sys_stats():
-    """Return (mem_mb, cpu_pct) — both 0.0 if psutil not available."""
     if _PSUTIL:
         try:
             mem = psutil.Process().memory_info().rss / 1024 / 1024
@@ -225,7 +359,75 @@ def _get_sys_stats():
             pass
     return 0.0, 0.0
 
-# ── 8. Persistence ────────────────────────────────────────────────────────────
+# ── 9. Macro Source Detection Helper ─────────────────────────────────────────
+
+def _detect_macro_source(embed: discord.Embed) -> str:
+    """Detect which macro software sent this embed."""
+    combined = ""
+    if embed.title:       combined += " " + embed.title
+    if embed.description: combined += " " + embed.description
+    if embed.footer and embed.footer.text:
+        combined += " " + embed.footer.text
+    if embed.author and embed.author.name:
+        combined += " " + embed.author.name
+    for f in embed.fields:
+        combined += " " + (f.name or "") + " " + (f.value or "")
+    combined_lower = combined.lower()
+
+    for macro in MACRO_SOURCE_PATTERNS:
+        matched = False
+        # Check footer patterns (most reliable)
+        for pat in macro.get("footer_patterns", []):
+            if re.search(pat, combined_lower):
+                matched = True
+                break
+        if not matched:
+            # Check field patterns
+            for pat in macro.get("field_patterns", []):
+                if re.search(pat, combined_lower):
+                    matched = True
+                    break
+        if matched:
+            return macro["name"]
+    return "Unknown Macro"
+
+def _extract_private_server_link(embed: discord.Embed, macro_source: str) -> tuple:
+    """
+    Extract the private server Roblox link from an embed,
+    handling all known macro formats. Returns (link, link_vector).
+    """
+    combined_full = ""
+    if embed.title:       combined_full += " " + embed.title
+    if embed.description: combined_full += " " + embed.description
+    for f in embed.fields:
+        name_low = (f.name or "").lower()
+        val      = f.value or ""
+
+        # Coteab Macro: "Join Server" field contains the link as a hyperlink
+        if any(kw in name_low for kw in ["join server", "private server",
+                                          "server link", "ps link", "join"]):
+            # Extract URL from markdown hyperlink [text](url) or raw
+            m = re.search(r'\(?(https?://[^\s\)]+)\)?', val)
+            if m:
+                return m.group(1), f"Embed Field: {f.name} [{macro_source}]"
+            # Also check raw roblox links
+            m = ROBLOX_LINK_RE.search(val)
+            if m:
+                return m.group(0), f"Embed Field: {f.name} [{macro_source}]"
+        combined_full += " " + val
+
+    if embed.description:
+        combined_full += " " + embed.description
+
+    # Fallback: scan for any Roblox share link in the whole embed
+    m = ROBLOX_LINK_RE.search(combined_full)
+    if m:
+        return m.group(0), f"Embed Text Scan [{macro_source}]"
+
+    # Check message components / buttons (handled outside, but try URL fields)
+    return None, "None"
+
+# ── 10. Persistence ───────────────────────────────────────────────────────────
 
 def load_persisted_metrics():
     global biome_counts, merchant_counts, webhook_activity
@@ -306,7 +508,7 @@ async def load_state_from_discord_cloud():
         log.error(f"CLOUD DATABASE: Recovery error: {e}")
     return False
 
-# ── 9. Metrics Payload ────────────────────────────────────────────────────────
+# ── 11. Metrics Payload ───────────────────────────────────────────────────────
 
 def get_metrics_payload() -> dict:
     now           = datetime.now(timezone.utc)
@@ -348,7 +550,6 @@ def get_metrics_payload() -> dict:
     }
 
 def get_zite_payload() -> dict:
-    """Compact payload designed for Zite to consume directly."""
     m = get_metrics_payload()
     t = m["telemetry"]
     return {
@@ -386,7 +587,7 @@ def get_zite_payload() -> dict:
         "merchant_breakdown": m["counters"]["merchants"],
     }
 
-# ── 10. Embed Builders ────────────────────────────────────────────────────────
+# ── 12. Embed Builders ────────────────────────────────────────────────────────
 
 def _zite_footer(label: str) -> str:
     return f"Zite Telemetry  •  {label}  •  {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
@@ -394,7 +595,7 @@ def _zite_footer(label: str) -> str:
 def _build_biome_embed(biome_name, event_type, channel_name, guild_name,
                        account_identity, roblox_link, link_vector,
                        duration_str, exec_ms, macro_capacity, metrics,
-                       started_at=None) -> discord.Embed:
+                       macro_source="Unknown", started_at=None) -> discord.Embed:
     is_start   = event_type == "STARTED"
     emoji      = BIOME_EMOJIS.get(biome_name, "❓")
     color      = BIOME_COLORS.get(biome_name, 0x778899) if is_start else 0x36393F
@@ -422,8 +623,9 @@ def _build_biome_embed(biome_name, event_type, channel_name, guild_name,
                     value=f"`{metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}`",
                     inline=True)
     embed.add_field(name="🌍 Total Biomes",   value=f"`{metrics['telemetry']['grand_total_biomes']}`", inline=True)
+    embed.add_field(name="🤖 Macro Source",   value=f"`{macro_source}`", inline=True)
     if roblox_link and roblox_link != "None":
-        embed.add_field(name="🔗 Server Link",
+        embed.add_field(name="🔗 Private Server",
                         value=f"[**Join →**]({roblox_link}) *(via {link_vector})*", inline=False)
     if is_start and started_at:
         embed.add_field(name="🕐 Expiry ETA",
@@ -434,7 +636,7 @@ def _build_biome_embed(biome_name, event_type, channel_name, guild_name,
 def _build_merchant_embed(merchant_name, event_type, channel_name, guild_name,
                           account_identity, roblox_link, link_vector,
                           duration_str, exec_ms, macro_capacity, metrics,
-                          started_at=None) -> discord.Embed:
+                          macro_source="Unknown", started_at=None) -> discord.Embed:
     is_start  = event_type == "SPAWNED"
     emoji     = MERCHANT_EMOJIS.get(merchant_name, "🏪")
     color     = MERCHANT_COLORS.get(merchant_name, 0xF59E0B) if is_start else 0x36393F
@@ -467,8 +669,9 @@ def _build_merchant_embed(merchant_name, event_type, channel_name, guild_name,
                     value=f"`{metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}`",
                     inline=True)
     embed.add_field(name="🏪 Total Merchants", value=f"`{metrics['telemetry']['grand_total_merchants']}`", inline=True)
+    embed.add_field(name="🤖 Macro Source",    value=f"`{macro_source}`", inline=True)
     if roblox_link and roblox_link != "None":
-        embed.add_field(name="🔗 Server Link",
+        embed.add_field(name="🔗 Private Server",
                         value=f"[**Join →**]({roblox_link}) *(via {link_vector})*", inline=False)
     if is_start and started_at:
         embed.add_field(name="⏰ Despawn ETA",
@@ -505,39 +708,7 @@ def _build_departure_embed(merchant_name, channel_name, account_id,
     embed.set_footer(text=_zite_footer("Departure Alert"))
     return embed
 
-def _build_plain_to_rich_embed(message: discord.Message) -> discord.Embed:
-    """Convert a plain-text message from website-output into a rich embed."""
-    content = message.content or ""
-    is_error   = any(w in content.upper() for w in ("ERROR", "FAIL", "EXCEPTION", "CRITICAL", "TRACEBACK"))
-    is_warning = any(w in content.upper() for w in ("WARNING", "WARN", "CAUTION"))
-    is_success = any(w in content.upper() for w in ("SUCCESS", "SYNCED", "RESTORED", "ONLINE", "BACKUP"))
-
-    if is_error:
-        color, icon, label = 0xFF2A2A, "🔴", "ERROR"
-    elif is_warning:
-        color, icon, label = 0xF59E0B, "⚠️", "WARNING"
-    elif is_success:
-        color, icon, label = 0x00FFA3, "✅", "SUCCESS"
-    else:
-        color, icon, label = 0x00E5FF, "📋", "LOG"
-
-    lines      = [l.strip() for l in content.strip().splitlines() if l.strip()]
-    title_line = lines[0][:200] if lines else "Log Entry"
-    body       = "\n".join(lines[1:])[:1000] if len(lines) > 1 else ""
-
-    embed = discord.Embed(
-        title=f"{icon}  {label}  —  {title_line}",
-        description=f"```\n{body}\n```" if body else None,
-        color=color,
-        timestamp=message.created_at,
-    )
-    embed.add_field(name="📡 Source Channel", value=f"`#{message.channel.name}`", inline=True)
-    embed.add_field(name="👤 Author",         value=f"`{message.author.display_name}`", inline=True)
-    embed.add_field(name="🕐 Timestamp",      value=f"`{message.created_at.strftime('%H:%M:%S UTC')}`", inline=True)
-    embed.set_footer(text=_zite_footer("Auto-Formatter  •  website-output → embed-output"))
-    return embed
-
-# ── 11. Merchant Departure Watchdog ──────────────────────────────────────────
+# ── 13. Merchant Departure Watchdog ──────────────────────────────────────────
 
 async def send_merchant_departure_warning(event_key, ev, seconds_left):
     _departure_warned.add(event_key)
@@ -581,16 +752,13 @@ async def merchant_departure_watchdog():
 async def _before_watchdog():
     await bot.wait_until_ready()
 
-# ── NEW: Auto-expire stale live events after 20 minutes ──────────────────────
-
 @tasks.loop(seconds=30)
 async def live_event_cleanup():
-    """Remove live events that have been running longer than 20 minutes."""
     now = datetime.now(timezone.utc)
     to_remove = []
     for key, ev in list(active_live_events.items()):
         elapsed = (now - datetime.fromisoformat(ev["started_at"])).total_seconds()
-        if elapsed > 1200:  # 20 minutes = 1200 seconds
+        if elapsed > 1200:
             to_remove.append(key)
     for key in to_remove:
         ev = active_live_events.pop(key, None)
@@ -602,10 +770,9 @@ async def live_event_cleanup():
 async def _before_cleanup():
     await bot.wait_until_ready()
 
-# ── 12. Auto-Pin Error System ─────────────────────────────────────────────────
+# ── 14. Auto-Pin Error System ─────────────────────────────────────────────────
 
 async def maybe_auto_pin_error(message: discord.Message):
-    """If message in website-output looks like an error, pin it."""
     content_up = (message.content or "").upper()
     if any(w in content_up for w in ("ERROR", "FAIL", "EXCEPTION", "CRITICAL", "TRACEBACK")):
         try:
@@ -632,10 +799,7 @@ async def maybe_auto_pin_error(message: discord.Message):
         except Exception as ex:
             log.error(f"AUTO-PIN: {ex}")
 
-# ── 13. website-output → embed-output Auto-Formatter ─────────────────────────
-# Handled inside on_message by checking channel ID
-
-# ── 14. Web Server ────────────────────────────────────────────────────────────
+# ── 15. Web Server ────────────────────────────────────────────────────────────
 
 def _build_dashboard_html() -> str:
     data = get_metrics_payload()
@@ -701,7 +865,6 @@ def _build_dashboard_html() -> str:
         '</div>'
     )
 
-    # Biome counters
     html += '<section><h2>📊 Biome Event Counters</h2>'
     if data["counters"]["biomes"]:
         for name, cnt in sorted(data["counters"]["biomes"].items(), key=lambda x: -x[1]):
@@ -711,7 +874,6 @@ def _build_dashboard_html() -> str:
         html += '<p class="empty">No biome data recorded yet.</p>'
     html += '</section>'
 
-    # Merchant counters
     html += '<section><h2>🏪 Merchant Event Counters</h2>'
     if data["counters"]["merchants"]:
         for name, cnt in sorted(data["counters"]["merchants"].items(), key=lambda x: -x[1]):
@@ -721,21 +883,23 @@ def _build_dashboard_html() -> str:
         html += '<p class="empty">No merchant data recorded yet.</p>'
     html += '</section>'
 
-    # Live events
     html += '<section><h2>🔴 Real-Time Active Sessions</h2>'
     if not data["live_events"]:
         html += '<p class="empty">No active macro instances detected right now.</p>'
     else:
         for ev in data["live_events"]:
+            macro_src = ev.get("macro_source", "Unknown")
+            ps_link   = ev.get("link", "None")
+            ps_html   = f'&nbsp;|&nbsp; <a href="{ps_link}" target="_blank" style="color:var(--cyan)">Private Server</a>' if ps_link and ps_link != "None" else ""
             html += (
                 f'<div class="live-row"><div>'
                 f'<div class="live-name">{ev["name"]} <small style="color:var(--muted);font-weight:400;">({ev["type"].upper()})</small></div>'
-                f'<div class="live-meta">Channel: <span>#{ev["channel_name"]}</span> &nbsp;|&nbsp; Account: <span>{ev.get("account_identity","Unknown")}</span></div>'
+                f'<div class="live-meta">Channel: <span>#{ev["channel_name"]}</span> &nbsp;|&nbsp; Account: <span>{ev.get("account_identity","Unknown")}</span>'
+                f' &nbsp;|&nbsp; Source: <span>{macro_src}</span>{ps_html}</div>'
                 f'</div><span class="pulse-badge">LIVE since {ev["started_at"][11:19]} UTC</span></div>'
             )
     html += '</section>'
 
-    # Channel profiles
     html += '<section><h2>📡 Channel Macro Profiles &amp; Session History</h2>'
     if not data["raw_webhook_registry"]:
         html += '<p class="empty">No channel stream history recorded yet.</p>'
@@ -753,9 +917,13 @@ def _build_dashboard_html() -> str:
                 html += '<p class="empty">Waiting for first completed event...</p>'
             else:
                 for lk, acc in active_accounts.items():
-                    html += f'<div class="account-row"><div class="account-name">{acc["display_name"]}</div><div>'
+                    ps_btn = ""
+                    if lk and lk.startswith("http"):
+                        ps_btn = f' <a href="{lk}" target="_blank" style="color:var(--cyan);font-size:11px;">[PS Link]</a>'
+                    html += f'<div class="account-row"><div class="account-name">{acc["display_name"]}{ps_btn}</div><div>'
                     for sess in reversed(acc.get("completed_sessions", [])):
-                        html += f'<span class="session-tag">{sess["name"]}: {sess["duration"]}</span>'
+                        src = sess.get("macro_source", "")
+                        html += f'<span class="session-tag">{sess["name"]}: {sess["duration"]}{" · " + src if src else ""}</span>'
                     html += '</div></div>'
             html += '</div>'
     html += '</section></div></body></html>'
@@ -770,7 +938,6 @@ class RenderHealthCheckHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        # ── /api/zite — compact Zite-optimised payload ────────────────────
         if self.path == "/api/zite":
             body = json.dumps(get_zite_payload(), ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(200)
@@ -779,8 +946,6 @@ class RenderHealthCheckHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-
-        # ── /api/metrics — full payload ───────────────────────────────────
         if self.path == "/api/metrics":
             body = json.dumps(get_metrics_payload(), ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(200)
@@ -789,8 +954,6 @@ class RenderHealthCheckHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-
-        # ── / — HTML dashboard ────────────────────────────────────────────
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.end_headers()
@@ -805,28 +968,63 @@ def keep_alive():
     log.info(f"WEB SERVER: Dashboard active on port {port}")
     server.serve_forever()
 
-# ── 15. Core Message Processing ───────────────────────────────────────────────
+# ── 16. Core Message Processing ───────────────────────────────────────────────
 
 def _extract_combined_text(message: discord.Message):
+    """
+    Extract combined text from message + embeds.
+    Also handles Coteab Macro's embed structure where the private server
+    link is in a 'Join Server' button or embed field.
+    """
     combined    = message.content or ""
     link_vector = "None"
+    roblox_link = None
+
+    # Check message-level components (buttons)
+    if message.components:
+        for row in message.components:
+            for comp in getattr(row, 'children', []):
+                if hasattr(comp, "url") and comp.url:
+                    url = comp.url
+                    combined += f" {url}"
+                    if "roblox.com" in url.lower():
+                        roblox_link = url
+                        link_vector = "Interaction Button Component Link"
+
     if message.embeds:
         for emb in message.embeds:
             parts = [emb.title or "", emb.description or ""]
+            if emb.footer and emb.footer.text:
+                parts.append(emb.footer.text)
+            if emb.author and emb.author.name:
+                parts.append(emb.author.name)
             for f in emb.fields:
                 parts += [f.name or "", f.value or ""]
+                # Coteab Macro: extract URL from "Join Server" field
+                name_low = (f.name or "").lower()
+                val      = f.value or ""
+                if any(kw in name_low for kw in
+                       ["join server", "private server", "server link", "ps link"]):
+                    # Try markdown link first: [text](url)
+                    m = re.search(r'\[.*?\]\((https?://[^\s\)]+)\)', val)
+                    if m and "roblox.com" in m.group(1):
+                        roblox_link = m.group(1)
+                        link_vector = f"Embed Field [{f.name}] (Coteab-style)"
+                    else:
+                        m2 = ROBLOX_LINK_RE.search(val)
+                        if m2:
+                            roblox_link = m2.group(0)
+                            link_vector = f"Embed Field [{f.name}]"
             combined += " " + " ".join(parts)
-    if message.components:
-        for row in message.components:
-            for comp in row.children:
-                if hasattr(comp, "url") and comp.url:
-                    combined    += f" {comp.url}"
-                    link_vector  = "Interaction Button Component Link"
-    m    = ROBLOX_LINK_RE.search(combined)
-    link = m.group(0) if m else None
-    if link and link_vector == "None":
-        link_vector = "Raw Message Text or Embed Block"
-    return combined, link, link_vector
+
+    # Fallback: scan raw content for Roblox link
+    if not roblox_link:
+        m = ROBLOX_LINK_RE.search(combined)
+        if m:
+            roblox_link = m.group(0)
+            link_vector = "Raw Message Text or Embed Block"
+
+    return combined, roblox_link, link_vector
 
 def _identify_biome(combined_text, combined_lower):
     m = BIOME_MATCH_RE.search(combined_text)
@@ -839,15 +1037,17 @@ def _identify_biome(combined_text, combined_lower):
     filtered = [w for w in words if w not in STOP_WORDS]
     name     = filtered[0] if filtered else "UNKNOWN BIOME"
     if name == "SAND":        return "SAND STORM"
+    if name in ("BLAZING",):  return "BLAZING SUN"
     if name in ("UNKNOWN BIOME", "UNKNOWN"): return "NORMAL"
     return name
 
 def _identify_merchant(combined_lower):
-    if "mysterious" in combined_lower: return "MYSTERIOUS MERCHANT"
-    if "traveling"  in combined_lower: return "TRAVELING MERCHANT"
-    if "mari"       in combined_lower: return "MARI (MERCHANT)"
-    if "jester"     in combined_lower: return "JESTER (MERCHANT)"
-    if "rin"        in combined_lower: return "RIN (MERCHANT)"
+    if "black merchant" in combined_lower: return "BLACK MERCHANT"
+    if "mysterious" in combined_lower:     return "MYSTERIOUS MERCHANT"
+    if "traveling" in combined_lower:      return "TRAVELING MERCHANT"
+    if "mari" in combined_lower:           return "MARI (MERCHANT)"
+    if "jester" in combined_lower:         return "JESTER (MERCHANT)"
+    if "rin" in combined_lower:            return "RIN (MERCHANT)"
     return "MERCHANT"
 
 def _resolve_active_event(cid_str, account_identity, event_name):
@@ -859,11 +1059,9 @@ def _resolve_active_event(cid_str, account_identity, event_name):
             return k, ev, ev["account_identity"]
     return key, None, account_identity
 
-# ── CHANGED: Embed dispatch removed — bot no longer sends biome/merchant embeds ──
-
 async def _process_merchant(message, combined_lower, is_start, cid_str,
                             now_iso, guild_name, roblox_link, link_vector,
-                            account_identity, is_forwarder, t0):
+                            account_identity, is_forwarder, t0, macro_source):
     merchant_name = _identify_merchant(combined_lower)
     event_type    = "SPAWNED" if is_start else "DESPAWNED"
     event_key, found_start, account_identity = _resolve_active_event(
@@ -882,6 +1080,7 @@ async def _process_merchant(message, combined_lower, is_start, cid_str,
             "type": "merchant", "name": merchant_name, "started_at": now_iso,
             "server": guild_name, "channel_name": message.channel.name,
             "account_identity": account_identity, "link": roblox_link or "None",
+            "macro_source": macro_source,
         }
         _departure_warned.discard(event_key)
     else:
@@ -899,7 +1098,8 @@ async def _process_merchant(message, combined_lower, is_start, cid_str,
                     and cid_str in webhook_activity
                     and link_key in webhook_activity[cid_str]["accounts"]):
                 webhook_activity[cid_str]["accounts"][link_key]["completed_sessions"].append(
-                    {"name": merchant_name, "duration": duration_str, "at": now_iso})
+                    {"name": merchant_name, "duration": duration_str,
+                     "at": now_iso, "macro_source": macro_source})
         else:
             duration_str = "N/A (Start missed)"
 
@@ -913,24 +1113,23 @@ async def _process_merchant(message, combined_lower, is_start, cid_str,
     print(f"[ZITE_DATA] type=merchant event={event_type} name={merchant_name} "
           f"channel={message.channel.name} account={account_identity} "
           f"duration={duration_str} capacity={macro_capacity} "
+          f"macro_source={macro_source} ps_link={roblox_link} "
           f"active={metrics['telemetry']['active_webhooks_last_10m']} "
           f"total={metrics['telemetry']['total_registered_webhooks']} "
           f"grand_merchants={metrics['telemetry']['grand_total_merchants']} "
           f"live={metrics['telemetry']['active_live_events']}")
 
-    print(f"\n[MERCHANT] {event_type} | {merchant_name} | {account_identity}")
+    print(f"\n[MERCHANT] {event_type} | {merchant_name} | {account_identity} | [{macro_source}]")
     print(f"   Channel : #{message.channel.name}  ({guild_name})")
     if roblox_link:
-        print(f"   Link    : {roblox_link}  [{link_vector}]")
+        print(f"   PS Link : {roblox_link}  [{link_vector}]")
     print(f"   Capacity: {macro_capacity} accounts  (40s macro + 15s buffer)")
     print(f"   Duration: {duration_str}  | {exec_ms:.1f}ms | Active: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
     print("-" * 80)
 
-    # ── Embed dispatch removed: bot no longer sends merchant embeds to channels ──
-
 async def _process_biome(message, combined_text, combined_lower, is_start,
                          cid_str, now_iso, guild_name, roblox_link, link_vector,
-                         account_identity, is_forwarder, t0):
+                         account_identity, is_forwarder, t0, macro_source):
     biome_name = _identify_biome(combined_text, combined_lower)
     event_type = "STARTED" if is_start else "ENDED"
     event_key, found_start, account_identity = _resolve_active_event(
@@ -949,6 +1148,7 @@ async def _process_biome(message, combined_text, combined_lower, is_start,
             "type": "biome", "name": biome_name, "started_at": now_iso,
             "server": guild_name, "channel_name": message.channel.name,
             "account_identity": account_identity, "link": roblox_link or "None",
+            "macro_source": macro_source,
         }
     else:
         target_key = event_key
@@ -966,7 +1166,8 @@ async def _process_biome(message, combined_text, combined_lower, is_start,
                 sessions = webhook_activity[cid_str]["accounts"][link_key]["completed_sessions"]
                 if len(sessions) >= 10:
                     sessions.pop(0)
-                sessions.append({"name": biome_name, "duration": duration_str, "at": now_iso})
+                sessions.append({"name": biome_name, "duration": duration_str,
+                                  "at": now_iso, "macro_source": macro_source})
         else:
             duration_str = "N/A (Start missed)"
 
@@ -980,935 +1181,598 @@ async def _process_biome(message, combined_text, combined_lower, is_start,
     print(f"[ZITE_DATA] type=biome event={event_type} name={biome_name} "
           f"channel={message.channel.name} account={account_identity} "
           f"duration={duration_str} capacity={macro_capacity} "
+          f"macro_source={macro_source} ps_link={roblox_link} "
           f"active={metrics['telemetry']['active_webhooks_last_10m']} "
           f"total={metrics['telemetry']['total_registered_webhooks']} "
           f"grand_biomes={metrics['telemetry']['grand_total_biomes']} "
           f"live={metrics['telemetry']['active_live_events']}")
 
-    print(f"\n[BIOME] {event_type} | {biome_name} | {account_identity}")
+    print(f"\n[BIOME] {event_type} | {biome_name} | {account_identity} | [{macro_source}]")
     print(f"   Channel : #{message.channel.name}  ({guild_name})")
     if roblox_link:
-        print(f"   Link    : {roblox_link}  [{link_vector}]")
+        print(f"   PS Link : {roblox_link}  [{link_vector}]")
     print(f"   Capacity: {macro_capacity} accounts  (40s macro + 15s buffer)")
     print(f"   Duration: {duration_str}  | {exec_ms:.1f}ms | Active: {metrics['telemetry']['active_webhooks_last_10m']}/{metrics['telemetry']['total_registered_webhooks']}")
     print("-" * 80)
 
-    # ── Embed dispatch removed: bot no longer sends biome embeds to channels ──
 
-# ── 16. DISCORD COMMANDS ──────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# ── 17.  MACRO APPLICATION SYSTEM  ────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def _cmd_guard(ctx):
-    """Returns True if command should be processed (only in website-cmds)."""
-    return ctx.channel.id == CMD_CHANNEL_ID
+DESKTOP_MACROS = [
+    ("FishScope",        "https://github.com/cresqnt-sys/FishScope-Macro/releases/tag/2.4-Beta3",                    False),
+    ("FishSol ✅",       "https://github.com/ivelchampion249/FishSol-Macro/releases/tag/v1.9.7-1",                   True),
+    ("MultiScope V2 ✅", "https://github.com/cresqnt-sys/MultiScope",                                               True),
+    ("RNGsus ❌",        "https://github.com/0bl1terate3/RNGsus",                                                    False),
+    ("MultiScope V1 ✅", "https://github.com/cresqnt-sys/MultiScope-V1/releases/tag/0.9.9.1-Stable",                True),
+    ("SolsScope",        "https://github.com/bazthedev/SolsScope/releases/latest",                                  False),
+    ("StayActive",       "https://github.com/0bl1terate3/StayActive/releases/tag/v0.1.8",                           False),
+    ("Oyster Detector",  "https://github.com/vexsyx/OysterDetector/releases/tag/v1.1.7",                            False),
+    ("Coteab ✅",        "https://github.com/xVapure/Noteab-Macro/releases/tag/v2.1.8-hotfix1",                     True),
+    ("Maxstellar ✅",    "https://github.com/maxstellar/maxstellar-Biome-Macro/releases",                           True),
+    ("Radiance",         "https://github.com/raandomdev/Radiance-Macro/releases/tag/v1.1.4",                        False),
+]
 
-# ─────────────────────────── SYSTEM / UPTIME ──────────────────────────────────
+MOBILE_MACROS = [
+    ("Slaoq",     "https://github.com/gustaslaoq/Sols-RNG-Sniper",       False),
+    ("DroidScope","https://github.com/ScopeDevelopment/DroidScope",       False),
+]
 
-@bot.command(name="uptime", aliases=["up"])
-async def cmd_uptime(ctx):
-    """Show bot + Render uptime."""
-    if not _cmd_guard(ctx): return
-    uptime      = _fmt_uptime(BOT_START_TIME)
-    mem, cpu    = _get_sys_stats()
-    embed = discord.Embed(title="⏱️  Bot & Render Uptime", color=0x00E5FF,
-                          timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="🟢 Uptime",     value=f"`{uptime}`",             inline=True)
-    embed.add_field(name="🚀 Started At", value=f"`{BOT_START_TIME.strftime('%Y-%m-%d %H:%M:%S UTC')}`", inline=True)
-    if _PSUTIL:
-        embed.add_field(name="💾 Memory Usage", value=f"`{mem:.1f} MB`", inline=True)
-        embed.add_field(name="⚙️ CPU",          value=f"`{cpu:.1f}%`",   inline=True)
-    else:
-        embed.add_field(name="💾 Memory / CPU", value="`psutil not installed`", inline=True)
-    embed.add_field(name="🐍 Python",     value=f"`{platform.python_version()}`", inline=True)
-    embed.add_field(name="📦 discord.py", value=f"`{discord.__version__}`",       inline=True)
-    embed.set_footer(text=_zite_footer("System"))
-    await ctx.send(embed=embed)
+# In-memory application state per user
+# app_state[user_id] = { "step": ..., "device": ..., "macro": ..., "macro_url": ..., "hours": ..., "msg_id": ... }
+app_state: dict = {}
 
-@bot.command(name="status", aliases=["sys"])
-async def cmd_status(ctx):
-    """Full system status snapshot."""
-    if not _cmd_guard(ctx): return
-    m        = get_metrics_payload()
-    t        = m["telemetry"]
-    mem, cpu = _get_sys_stats()
-    embed = discord.Embed(title="📊  System Status", color=0x00FFA3,
-                          timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="🟢 Status",            value="`ONLINE`",                             inline=True)
-    embed.add_field(name="⏱️ Uptime",            value=f"`{m['uptime']}`",                     inline=True)
-    embed.add_field(name="💾 RAM",               value=f"`{mem:.1f} MB`" if _PSUTIL else "`N/A`", inline=True)
-    embed.add_field(name="📡 Total Channels",    value=f"`{t['total_registered_webhooks']}`",  inline=True)
-    embed.add_field(name="🔴 Active (10m)",      value=f"`{t['active_webhooks_last_10m']}`",   inline=True)
-    embed.add_field(name="🔎 Detected Channels", value=f"`{t['total_detected_channels']}`",    inline=True)
-    embed.add_field(name="🌍 Total Biomes",      value=f"`{t['grand_total_biomes']}`",         inline=True)
-    embed.add_field(name="🏪 Total Merchants",   value=f"`{t['grand_total_merchants']}`",      inline=True)
-    embed.add_field(name="⚡ Live Events",       value=f"`{t['active_live_events']}`",         inline=True)
-    embed.set_footer(text=_zite_footer("System Status"))
-    await ctx.send(embed=embed)
+# ─── Views ────────────────────────────────────────────────────────────────────
 
-@bot.command(name="ping")
-async def cmd_ping(ctx):
-    """Bot latency."""
-    if not _cmd_guard(ctx): return
-    latency = round(bot.latency * 1000)
-    color   = 0x00FFA3 if latency < 100 else (0xF59E0B if latency < 300 else 0xFF2A2A)
-    embed   = discord.Embed(title="🏓  Pong!", color=color)
-    embed.add_field(name="Gateway Latency", value=f"`{latency}ms`", inline=True)
-    embed.set_footer(text=_zite_footer("Ping"))
-    await ctx.send(embed=embed)
+class ClaimedView(discord.ui.View):
+    """Replaces the application view after someone claims it — shows locked message."""
+    def __init__(self, claimant: discord.Member):
+        super().__init__(timeout=None)
+        btn = discord.ui.Button(
+            label=f"🔒 Claimed by {claimant.display_name}",
+            style=discord.ButtonStyle.secondary,
+            disabled=True,
+        )
+        self.add_item(btn)
 
-# ──────────────────────────── WEBHOOKS ────────────────────────────────────────
 
-@bot.command(name="webhooks", aliases=["wh"])
-async def cmd_webhooks(ctx):
-    """Total webhooks registered + active count."""
-    if not _cmd_guard(ctx): return
-    total  = len(webhook_activity)
-    active = _active_webhook_count()
-    embed  = discord.Embed(title="📡  Webhook Overview", color=0x00E5FF,
-                           timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="📦 Total Registered", value=f"`{total}`",  inline=True)
-    embed.add_field(name="🟢 Active (10m)",     value=f"`{active}`", inline=True)
-    embed.add_field(name="🔴 Inactive",         value=f"`{total - active}`", inline=True)
-    embed.set_footer(text=_zite_footer("Webhooks"))
-    await ctx.send(embed=embed)
+class DeviceSelectView(discord.ui.View):
+    """Step 1 — choose Desktop or Mobile."""
+    def __init__(self, owner_id: int):
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
 
-@bot.command(name="webhooklist", aliases=["whlist"])
-async def cmd_webhook_list(ctx):
-    """List all registered webhook channels with last-seen time."""
-    if not _cmd_guard(ctx): return
-    now = datetime.now(timezone.utc)
-    if not webhook_activity:
-        await ctx.send(embed=discord.Embed(description="No webhooks registered yet.", color=0x36393F))
-        return
-    lines = []
-    for cid, d in sorted(webhook_activity.items(), key=lambda x: x[1]["name"]):
-        delta_m = (now - datetime.fromisoformat(d["last_seen"])).total_seconds() / 60
-        status  = "🟢" if delta_m <= 10 else "🔴"
-        lines.append(f"{status} `#{d['name']}` — {len(d.get('accounts',{}))} accs — seen {delta_m:.1f}m ago")
-    chunks = []
-    chunk  = []
-    for l in lines:
-        if sum(len(x) for x in chunk) + len(l) > 3800:
-            chunks.append(chunk); chunk = []
-        chunk.append(l)
-    if chunk: chunks.append(chunk)
-    for i, ch in enumerate(chunks):
-        embed = discord.Embed(
-            title=f"📡  Webhook Channel List  ({i+1}/{len(chunks)})",
-            description="\n".join(ch), color=0x00E5FF,
-            timestamp=datetime.now(timezone.utc))
-        embed.set_footer(text=_zite_footer("Webhooks"))
-        await ctx.send(embed=embed)
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        msg_id = str(interaction.message.id)
+        # If already claimed by someone else
+        if msg_id in claimed_applications:
+            if claimed_applications[msg_id] != interaction.user.id:
+                await interaction.response.send_message(
+                    "❌ This application has already been claimed by another user.",
+                    ephemeral=True,
+                )
+                return False
+        return True
 
-@bot.command(name="webhookinfo", aliases=["whinfo"])
-async def cmd_webhook_info(ctx, *, channel_name: str):
-    """Detailed info about a specific webhook channel: !webhookinfo channel-name"""
-    if not _cmd_guard(ctx): return
-    target = None
-    for cid, d in webhook_activity.items():
-        if d["name"].lower() == channel_name.lower().lstrip("#"):
-            target = (cid, d); break
-    if not target:
-        await ctx.send(embed=discord.Embed(description=f"❌ No webhook found for `#{channel_name}`.", color=0xFF2A2A))
-        return
-    cid, d    = target
-    now       = datetime.now(timezone.utc)
-    delta_m   = (now - datetime.fromisoformat(d["last_seen"])).total_seconds() / 60
-    accounts  = d.get("accounts", {})
-    total_ses = sum(len(a.get("completed_sessions", [])) for a in accounts.values())
-    embed     = discord.Embed(title=f"📡  #{d['name']} — Webhook Detail", color=0x00E5FF,
-                              timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="Channel ID",       value=f"`{cid}`",               inline=True)
-    embed.add_field(name="Total Frames",     value=f"`{d['total_messages']}`",inline=True)
-    embed.add_field(name="Last Seen",        value=f"`{delta_m:.1f}m ago`",   inline=True)
-    embed.add_field(name="Status",           value="`🟢 Active`" if delta_m <= 10 else "`🔴 Idle`", inline=True)
-    embed.add_field(name="Accounts Tracked", value=f"`{len(accounts)}`",      inline=True)
-    embed.add_field(name="Total Sessions",   value=f"`{total_ses}`",          inline=True)
-    for lk, acc in list(accounts.items())[:8]:
-        sessions_preview = ", ".join(
-            f"{s['name']}({s['duration']})" for s in acc.get("completed_sessions", [])[-3:]
-        ) or "None yet"
-        embed.add_field(
-            name=f"👤 {acc['display_name']}",
-            value=f"Sessions: `{len(acc.get('completed_sessions',[]))}`\nLast 3: `{sessions_preview}`",
+    @discord.ui.button(label="🖥️ Desktop", style=discord.ButtonStyle.primary, custom_id="dev_desktop")
+    async def desktop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        msg_id = str(interaction.message.id)
+        # Claim this application
+        claimed_applications[msg_id] = interaction.user.id
+        # Check role
+        if not _has_wants_to_macro_role(interaction.user):
+            await interaction.response.send_message(
+                "❌ You need the **Wants to Macro** role to use this application.",
+                ephemeral=True,
+            )
+            return
+        app_state[interaction.user.id] = {"step": "macro", "device": "Desktop", "msg_id": interaction.message.id}
+        view = MacroSelectView(interaction.user.id, "Desktop")
+        embed = _appli_embed(
+            "📋  Step 2 — Choose Your Macro (Desktop)",
+            "Select the macro software you are using. Links are provided for download.\n\n"
+            "✅ = **Recommended** | ❌ = **Not Recommended**",
+            0x5865F2,
+        )
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    @discord.ui.button(label="📱 Mobile", style=discord.ButtonStyle.success, custom_id="dev_mobile")
+    async def mobile(self, interaction: discord.Interaction, button: discord.ui.Button):
+        msg_id = str(interaction.message.id)
+        claimed_applications[msg_id] = interaction.user.id
+        if not _has_wants_to_macro_role(interaction.user):
+            await interaction.response.send_message(
+                "❌ You need the **Wants to Macro** role to use this application.",
+                ephemeral=True,
+            )
+            return
+        app_state[interaction.user.id] = {"step": "macro", "device": "Mobile", "msg_id": interaction.message.id}
+        view = MacroSelectView(interaction.user.id, "Mobile")
+        embed = _appli_embed(
+            "📋  Step 2 — Choose Your Macro (Mobile)",
+            "Select the macro software you are using on mobile.",
+            0x57F287,
+        )
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class MacroSelectView(discord.ui.View):
+    """Step 2 — select a macro from a dropdown."""
+    def __init__(self, owner_id: int, device: str):
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
+        self.device   = device
+        macro_list = DESKTOP_MACROS if device == "Desktop" else MOBILE_MACROS
+        options = []
+        for name, url, recommended in macro_list:
+            clean = name.replace(" ✅", "").replace(" ❌", "")
+            desc  = "✅ Recommended" if recommended else ("❌ Not recommended" if "❌" in name else "")
+            options.append(discord.SelectOption(label=name, value=clean, description=desc[:50]))
+        options.append(discord.SelectOption(label="Others — I'll type the name", value="__others__", description="My macro isn't listed here"))
+        self.add_item(MacroDropdown(options, owner_id, device))
+        self.add_item(BackToDeviceButton(owner_id))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "❌ This application has been claimed by someone else.", ephemeral=True)
+            return False
+        return True
+
+
+class MacroDropdown(discord.ui.Select):
+    def __init__(self, options, owner_id, device):
+        super().__init__(placeholder="🔽 Select your macro...", options=options, min_values=1, max_values=1)
+        self.owner_id = owner_id
+        self.device   = device
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("❌ This isn't your application.", ephemeral=True)
+            return
+        choice = self.values[0]
+        if choice == "__others__":
+            # Ask user to type the macro name via a modal
+            modal = OthersMacroModal(self.owner_id, self.device)
+            await interaction.response.send_modal(modal)
+            return
+        # Find URL
+        macro_list = DESKTOP_MACROS if self.device == "Desktop" else MOBILE_MACROS
+        url = "N/A"
+        for name, u, _ in macro_list:
+            clean = name.replace(" ✅", "").replace(" ❌", "")
+            if clean == choice:
+                url = u
+                break
+        app_state[self.owner_id].update({"macro": choice, "macro_url": url, "step": "hours"})
+        view  = HoursInputView(self.owner_id)
+        embed = _appli_embed(
+            "📋  Step 3 — AFK Hours",
+            f"You selected **{choice}**.\n\n"
+            f"How many hours can you **AFK per day**?\n"
+            f"Please enter a number (e.g. `3`, `4.5`).",
+            0x00CED1,
+        )
+        embed.add_field(name="📥 How to answer", value="Click the button below to enter your hours.", inline=False)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class OthersMacroModal(discord.ui.Modal, title="Tell us your macro name"):
+    macro_name = discord.ui.TextInput(
+        label="Macro name",
+        placeholder="e.g. MyCustomMacro",
+        max_length=80,
+    )
+
+    def __init__(self, owner_id: int, device: str):
+        super().__init__()
+        self.owner_id = owner_id
+        self.device   = device
+
+    async def on_submit(self, interaction: discord.Interaction):
+        name = self.macro_name.value.strip()
+        app_state[self.owner_id].update({"macro": name, "macro_url": "N/A", "step": "hours"})
+        view  = HoursInputView(self.owner_id)
+        embed = _appli_embed(
+            "📋  Step 3 — AFK Hours",
+            f"You selected **{name}**.\n\n"
+            f"How many hours can you **AFK per day**?\n"
+            f"Please click the button below to enter your hours.",
+            0x00CED1,
+        )
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class HoursInputView(discord.ui.View):
+    """Step 3 — enter hours via modal."""
+    def __init__(self, owner_id: int):
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("❌ This isn't your application.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="⏰ Enter my AFK hours", style=discord.ButtonStyle.primary)
+    async def enter_hours(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(HoursModal(self.owner_id))
+
+
+class HoursModal(discord.ui.Modal, title="How many hours can you AFK per day?"):
+    hours_input = discord.ui.TextInput(
+        label="Hours per day (e.g. 3, 4.5, 8)",
+        placeholder="Enter a number like 3 or 4.5",
+        max_length=5,
+    )
+
+    def __init__(self, owner_id: int):
+        super().__init__()
+        self.owner_id = owner_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = self.hours_input.value.strip().replace(",", ".")
+        try:
+            hours = float(raw)
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Please enter a valid number (e.g. `3` or `4.5`).", ephemeral=True)
+            return
+
+        app_state[self.owner_id]["hours"] = hours
+        app_state[self.owner_id]["step"]  = "confirm_hours"
+
+        # Calculate feedback
+        if hours < 1:
+            feedback = "⚠️ That's under 1 hour. **Try re-managing your time, okay?**"
+            color    = 0xFF4500
+            can_proceed = False
+        elif hours < 3:
+            feedback = "💛 That's under 3 hours. **A little higher would be better, okay?**"
+            color    = 0xF59E0B
+            can_proceed = False
+        else:
+            feedback = f"✅ {hours}h/day — **You will be a Trial Macroer, okay?**"
+            color    = 0x00FFA3
+            can_proceed = True
+
+        # Calculate what time window they'd need to hit 3h
+        if hours >= 3:
+            needed_start = "Any time works!"
+        else:
+            needed_start = f"You would need to rearrange your day to find a solid **3-hour window**."
+
+        view  = HoursConfirmView(self.owner_id, can_proceed)
+        embed = _appli_embed(
+            "📋  Step 3 — AFK Hours Result",
+            f"You said: **{hours} hours/day**\n\n{feedback}\n\n📅 {needed_start}",
+            color,
+        )
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class HoursConfirmView(discord.ui.View):
+    """Step 3 confirm — Yes/No whether to continue."""
+    def __init__(self, owner_id: int, can_proceed: bool):
+        super().__init__(timeout=300)
+        self.owner_id    = owner_id
+        self.can_proceed = can_proceed
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("❌ This isn't your application.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="✅ Yes, continue", style=discord.ButtonStyle.success)
+    async def yes_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.can_proceed:
+            # Not enough hours — decline
+            embed = _appli_embed(
+                "❌  Application Declined",
+                "Your available AFK time is too low to qualify.\n\n"
+                "You need at least **3 hours/day** to become a Trial Macroer.\n"
+                "Please re-manage your schedule and try again later!",
+                0xFF2A2A,
+            )
+            await interaction.response.edit_message(embed=embed, view=None)
+            return
+        # Enough hours — show the note/agreement
+        view  = AgreementView(self.owner_id)
+        embed = _appli_embed(
+            "📋  Step 4 — Server Agreement",
+            "**ENG:**\nHi! Thank you for choosing my server as a place to macro! "
+            "In order to gain access, you'll need to macro **3 hours** first to gain access, "
+            "and then macro at least **4 hours each day** to maintain it. "
+            "Please send your private server and ping a staff member. "
+            "**Do you agree with that?**\n\n"
+            "**VN:**\nChào! Cảm ơn bạn đã chọn máy chủ của tôi để chạy macro! "
+            "Để được cấp quyền truy cập, bạn cần chạy macro **3 giờ** trước, "
+            "sau đó chạy macro ít nhất **4 giờ mỗi ngày** để duy trì quyền đó. "
+            "Vui lòng gửi private server của bạn và nhắn tin cho Staff. "
+            "**Bạn có và đồng ý với điều này không?**",
+            0x5865F2,
+        )
+        await interaction.response.edit_message(embed=embed, view=view)
+
+    @discord.ui.button(label="❌ No, cancel", style=discord.ButtonStyle.danger)
+    async def no_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = _appli_embed(
+            "❌  Application Declined",
+            "You chose not to continue. Your application has been declined.\n"
+            "Feel free to apply again when you're ready!",
+            0xFF2A2A,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        app_state.pop(interaction.user.id, None)
+
+
+class AgreementView(discord.ui.View):
+    """Step 4 — agree to server rules then ask for afk time window."""
+    def __init__(self, owner_id: int):
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("❌ This isn't your application.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="✅ I Agree / Tôi Đồng Ý", style=discord.ButtonStyle.success)
+    async def agree(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(TimeWindowModal(self.owner_id))
+
+    @discord.ui.button(label="❌ I Disagree / Không", style=discord.ButtonStyle.danger)
+    async def disagree(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = _appli_embed(
+            "❌  Application Declined",
+            "You did not agree to the server terms.\n\n"
+            "Your application has been **declined**.\n"
+            "You may apply again whenever you change your mind!",
+            0xFF2A2A,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        app_state.pop(interaction.user.id, None)
+
+
+class TimeWindowModal(discord.ui.Modal, title="When can you AFK? (Time window)"):
+    time_window = discord.ui.TextInput(
+        label="Your daily AFK time window",
+        placeholder="e.g. 8 PM – 11 PM, or 20:00–23:00 UTC+7",
+        max_length=100,
+        style=discord.TextStyle.short,
+    )
+
+    def __init__(self, owner_id: int):
+        super().__init__()
+        self.owner_id = owner_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        window = self.time_window.value.strip()
+        app_state[self.owner_id]["time_window"] = window
+        app_state[self.owner_id]["step"]        = "final_confirm"
+
+        view  = FinalConfirmView(self.owner_id)
+        state = app_state[self.owner_id]
+        embed = _build_application_summary_embed(interaction.user, state, preview=True)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class FinalConfirmView(discord.ui.View):
+    """Step 5 — final yes/no to submit."""
+    def __init__(self, owner_id: int):
+        super().__init__(timeout=300)
+        self.owner_id = owner_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("❌ This isn't your application.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="✅ Submit Application", style=discord.ButtonStyle.success)
+    async def submit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _finalize_application(interaction)
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = _appli_embed(
+            "❌  Application Cancelled",
+            "Your application was cancelled at the final step.\nFeel free to apply again!",
+            0xFF2A2A,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        app_state.pop(interaction.user.id, None)
+
+
+class BackToDeviceButton(discord.ui.Button):
+    def __init__(self, owner_id):
+        super().__init__(label="← Back", style=discord.ButtonStyle.secondary, row=1)
+        self.owner_id = owner_id
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("❌ This isn't your application.", ephemeral=True)
+            return
+        view  = DeviceSelectView(self.owner_id)
+        embed = _build_application_start_embed()
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+# ─── Application Helpers ──────────────────────────────────────────────────────
+
+def _has_wants_to_macro_role(member: discord.Member) -> bool:
+    return any(r.id == WANTS_TO_MACRO_ROLE_ID for r in member.roles)
+
+def _appli_embed(title: str, desc: str, color: int) -> discord.Embed:
+    e = discord.Embed(title=title, description=desc, color=color,
+                      timestamp=datetime.now(timezone.utc))
+    e.set_footer(text="Macro Application  •  Zite Bot  •  Sol's RNG")
+    return e
+
+def _build_application_start_embed() -> discord.Embed:
+    e = discord.Embed(
+        title="📝  Macro Setup Application",
+        description=(
+            "Welcome to the **Macro Setup Application**!\n\n"
+            "This survey helps our server managers understand your macro setup "
+            "and availability.\n\n"
+            "**Requirements:**\n"
+            "> • You must have the **Wants to Macro** role\n"
+            "> • You need at least **3 hours/day** to AFK\n"
+            "> • You must agree to macro for **4+ hours/day** to maintain access\n\n"
+            "**Select your device to begin:**"
+        ),
+        color=0x5865F2,
+        timestamp=datetime.now(timezone.utc),
+    )
+    e.set_footer(text="Macro Application  •  Zite Bot  •  Sol's RNG")
+    return e
+
+def _build_application_summary_embed(member: discord.Member, state: dict, preview=False) -> discord.Embed:
+    macro_list = DESKTOP_MACROS if state.get("device") == "Desktop" else MOBILE_MACROS
+    macro_url  = state.get("macro_url", "N/A")
+    # Try to find URL if it's from the known list
+    for name, url, _ in macro_list:
+        clean = name.replace(" ✅", "").replace(" ❌", "")
+        if clean == state.get("macro"):
+            macro_url = url
+            break
+
+    hours  = state.get("hours", "?")
+    window = state.get("time_window", "Not specified")
+    device = state.get("device", "?")
+    macro  = state.get("macro", "?")
+
+    color  = 0x00FFA3 if not preview else 0xF59E0B
+    title  = ("📋  Application Summary (Preview)" if preview
+               else f"✅  Application Submitted — {member.display_name}")
+
+    e = discord.Embed(title=title, color=color, timestamp=datetime.now(timezone.utc))
+    e.set_thumbnail(url=member.display_avatar.url)
+    e.add_field(name="👤 Applicant",      value=f"{member.mention} (`{member}`)", inline=True)
+    e.add_field(name="🆔 User ID",        value=f"`{member.id}`",                 inline=True)
+    e.add_field(name="📅 Applied At",     value=f"`{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}`", inline=True)
+    e.add_field(name="🖥️ Device",         value=f"`{device}`",                    inline=True)
+    e.add_field(name="🤖 Macro Software", value=f"[{macro}]({macro_url})" if macro_url != "N/A" else f"`{macro}`", inline=True)
+    e.add_field(name="⏰ AFK Hours/Day",  value=f"`{hours}h`",                    inline=True)
+    e.add_field(name="🕐 AFK Time Window",value=f"`{window}`",                    inline=False)
+    e.add_field(name="📌 Status",
+                value="`🟡 Pending Review`" if preview else "`🟢 Submitted — Awaiting Staff`",
+                inline=False)
+    if not preview:
+        e.add_field(
+            name="📣 Next Steps",
+            value=(
+                "✅ You have been given the **Macro Trail Verifying** role.\n"
+                "Please **send your private server link** and **ping a Staff member** to get started.\n\n"
+                "💬 If you have any questions or struggles with the macro, "
+                "**our staffs are here to help you!**"
+            ),
             inline=False,
         )
-    embed.set_footer(text=_zite_footer("Webhook Info"))
-    await ctx.send(embed=embed)
+    e.set_footer(text="Macro Application  •  Zite Bot  •  Sol's RNG")
+    return e
 
-@bot.command(name="webhookaccounts", aliases=["whacc"])
-async def cmd_webhook_accounts(ctx, *, channel_name: str):
-    """List all tracked accounts in a webhook channel."""
-    if not _cmd_guard(ctx): return
-    target = None
-    for cid, d in webhook_activity.items():
-        if d["name"].lower() == channel_name.lower().lstrip("#"):
-            target = (cid, d); break
-    if not target:
-        await ctx.send(embed=discord.Embed(description=f"❌ Not found: `#{channel_name}`.", color=0xFF2A2A))
-        return
-    cid, d   = target
-    accounts = d.get("accounts", {})
-    if not accounts:
-        await ctx.send(embed=discord.Embed(description="No accounts tracked yet.", color=0x36393F))
-        return
-    lines = []
-    for lk, acc in accounts.items():
-        sess_count = len(acc.get("completed_sessions", []))
-        lines.append(f"**{acc['display_name']}** — `{sess_count}` sessions")
-    embed = discord.Embed(title=f"👤  Accounts in #{d['name']}",
-                          description="\n".join(lines), color=0xA78BFA,
-                          timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Webhook Accounts"))
-    await ctx.send(embed=embed)
 
-# ────────────────────────── CHANNELS ─────────────────────────────────────────
+async def _finalize_application(interaction: discord.Interaction):
+    """Grant role, send DM, send to server-output, update message."""
+    member = interaction.user
+    state  = app_state.get(member.id, {})
 
-@bot.command(name="channels", aliases=["ch"])
-async def cmd_channels(ctx):
-    """Total detected channel count breakdown."""
-    if not _cmd_guard(ctx): return
-    embed = discord.Embed(title="🔎  Detected Channels Overview", color=0x00FFA3,
-                          timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="🔎 Auto-Detected",     value=f"`{len(dynamic_detected_channels)}`", inline=True)
-    embed.add_field(name="📋 Whitelist (static)", value=f"`{len(MISSING_CHANNEL_WHITELIST)}`", inline=True)
-    embed.add_field(name="📦 Container Guilds",  value=f"`{len(AUTO_DETECT_CONTAINERS)}`",    inline=True)
-    embed.add_field(name="📡 Webhook Registry",  value=f"`{len(webhook_activity)}`",          inline=True)
-    embed.add_field(name="🔴 Active (10m)",      value=f"`{_active_webhook_count()}`",        inline=True)
-    embed.set_footer(text=_zite_footer("Channel Overview"))
-    await ctx.send(embed=embed)
+    # Grant Macro Trail Verifying role
+    guild = interaction.guild
+    role  = guild.get_role(MACRO_TRAIL_VERIFYING_ROLE) if guild else None
+    role_granted = False
+    if role:
+        try:
+            await member.add_roles(role, reason="Macro application approved")
+            role_granted = True
+        except discord.Forbidden:
+            log.warning(f"APPLI: Cannot grant role to {member}")
 
-@bot.command(name="channellist", aliases=["chlist"])
-async def cmd_channel_list(ctx):
-    """List every auto-detected channel ID and name."""
-    if not _cmd_guard(ctx): return
-    lines = []
-    for cid in sorted(dynamic_detected_channels):
-        ch = bot.get_channel(cid)
-        name = f"#{ch.name}" if ch else "Unknown"
-        lines.append(f"`{cid}` — {name}")
-    if not lines:
-        lines = ["No channels auto-detected yet."]
-    embed = discord.Embed(title="🔎  Auto-Detected Channels",
-                          description="\n".join(lines[:30]), color=0x00FFA3,
-                          timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Channel List"))
-    await ctx.send(embed=embed)
+    # Build summary embed
+    summary_embed = _build_application_summary_embed(member, state, preview=False)
 
-@bot.command(name="channelinfo", aliases=["chinfo"])
-async def cmd_channel_info(ctx, channel: discord.TextChannel = None):
-    """Info about a specific channel: !channelinfo #channel"""
-    if not _cmd_guard(ctx): return
-    ch = channel or ctx.channel
-    cid_str = str(ch.id)
-    wh_data = webhook_activity.get(cid_str)
-    in_detected  = ch.id in dynamic_detected_channels
-    in_whitelist = ch.id in MISSING_CHANNEL_WHITELIST
-    in_container = ch.guild.id in AUTO_DETECT_CONTAINERS
-    embed = discord.Embed(title=f"📡  Channel Info — #{ch.name}", color=0x00E5FF,
-                          timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="Channel ID",      value=f"`{ch.id}`",         inline=True)
-    embed.add_field(name="Category",        value=f"`{ch.category}`",   inline=True)
-    embed.add_field(name="Guild",           value=f"`{ch.guild.name}`", inline=True)
-    embed.add_field(name="Auto-Detected",   value="✅" if in_detected else "❌",  inline=True)
-    embed.add_field(name="Whitelisted",     value="✅" if in_whitelist else "❌", inline=True)
-    embed.add_field(name="Container Guild", value="✅" if in_container else "❌", inline=True)
-    if wh_data:
-        now     = datetime.now(timezone.utc)
-        delta_m = (now - datetime.fromisoformat(wh_data["last_seen"])).total_seconds() / 60
-        embed.add_field(name="Total Frames", value=f"`{wh_data['total_messages']}`",     inline=True)
-        embed.add_field(name="Last Seen",    value=f"`{delta_m:.1f}m ago`",              inline=True)
-        embed.add_field(name="Accounts",     value=f"`{len(wh_data.get('accounts',{}))}`", inline=True)
-    embed.set_footer(text=_zite_footer("Channel Info"))
-    await ctx.send(embed=embed)
+    # Update the application message
+    await interaction.response.edit_message(embed=summary_embed, view=None)
 
-# ─────────────────────── CONFIG MANAGEMENT ────────────────────────────────────
-
-@bot.command(name="config", aliases=["cfg"])
-async def cmd_config(ctx):
-    """View current detection config."""
-    if not _cmd_guard(ctx): return
-    embed = discord.Embed(title="⚙️  Detection Configuration", color=0xA78BFA,
-                          timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="🏛️ Container Guild IDs",
-                    value="\n".join(f"`{x}`" for x in AUTO_DETECT_CONTAINERS) or "None",
-                    inline=False)
-    embed.add_field(name="📋 Static Whitelist Channel IDs",
-                    value="\n".join(f"`{x}`" for x in MISSING_CHANNEL_WHITELIST) or "None",
-                    inline=False)
-    embed.add_field(name="⏱️ Save Interval",    value=f"`{SAVE_INTERVAL_S}s`",        inline=True)
-    embed.add_field(name="☁️ Backup Interval",  value=f"`{BACKUP_INTERVAL_S}s`",      inline=True)
-    embed.add_field(name="⚠️ Depart Warn",      value=f"`{MERCHANT_WARN_BEFORE_S}s`", inline=True)
-    embed.add_field(name="🔎 Detected Channels",value=f"`{len(dynamic_detected_channels)}`", inline=True)
-    embed.set_footer(text=_zite_footer("Config"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="addcontainer")
-async def cmd_add_container(ctx, guild_id: int):
-    """Add a guild/category ID to auto-detect containers: !addcontainer <id>"""
-    if not _cmd_guard(ctx): return
-    AUTO_DETECT_CONTAINERS.add(guild_id)
-    embed = discord.Embed(
-        title="✅  Container Added",
-        description=f"Guild/Category ID `{guild_id}` added to auto-detect containers.",
-        color=0x00FFA3, timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Config"))
-    await ctx.send(embed=embed)
-    log.info(f"CONFIG: Added container {guild_id}")
-
-@bot.command(name="removecontainer")
-async def cmd_remove_container(ctx, guild_id: int):
-    """Remove a guild/category from auto-detect containers: !removecontainer <id>"""
-    if not _cmd_guard(ctx): return
-    AUTO_DETECT_CONTAINERS.discard(guild_id)
-    embed = discord.Embed(
-        title="🗑️  Container Removed",
-        description=f"ID `{guild_id}` removed from containers.",
-        color=0xF59E0B, timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Config"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="addwhitelist")
-async def cmd_add_whitelist(ctx, channel_id: int):
-    """Add a channel ID to the static whitelist: !addwhitelist <id>"""
-    if not _cmd_guard(ctx): return
-    MISSING_CHANNEL_WHITELIST.add(channel_id)
-    embed = discord.Embed(
-        title="✅  Whitelist Updated",
-        description=f"Channel ID `{channel_id}` added to static whitelist.",
-        color=0x00FFA3, timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Config"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="removewhitelist")
-async def cmd_remove_whitelist(ctx, channel_id: int):
-    """Remove a channel ID from the static whitelist: !removewhitelist <id>"""
-    if not _cmd_guard(ctx): return
-    MISSING_CHANNEL_WHITELIST.discard(channel_id)
-    embed = discord.Embed(
-        title="🗑️  Whitelist Updated",
-        description=f"Channel ID `{channel_id}` removed from whitelist.",
-        color=0xF59E0B, timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Config"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="addchannel")
-async def cmd_add_channel(ctx, channel: discord.TextChannel):
-    """Manually add a channel to the detection set: !addchannel #channel"""
-    if not _cmd_guard(ctx): return
-    was_new = channel.id not in dynamic_detected_channels
-    dynamic_detected_channels.add(channel.id)
-    embed = discord.Embed(
-        title="✅  Channel Registered" if was_new else "ℹ️  Already Registered",
-        description=f"<#{channel.id}> (`{channel.id}`) is now monitored.",
-        color=0x00FFA3 if was_new else 0xA78BFA,
-        timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Config"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="removechannel")
-async def cmd_remove_channel(ctx, channel: discord.TextChannel):
-    """Remove a channel from the detection set: !removechannel #channel"""
-    if not _cmd_guard(ctx): return
-    dynamic_detected_channels.discard(channel.id)
-    embed = discord.Embed(
-        title="🗑️  Channel Removed",
-        description=f"<#{channel.id}> removed from monitored channels.",
-        color=0xF59E0B, timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Config"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="setwarntime")
-async def cmd_set_warn_time(ctx, seconds: int):
-    """Set merchant departure warning time: !setwarntime 30"""
-    if not _cmd_guard(ctx): return
-    global MERCHANT_WARN_BEFORE_S
-    MERCHANT_WARN_BEFORE_S = max(5, min(seconds, 120))
-    embed = discord.Embed(
-        title="⚙️  Warn Time Updated",
-        description=f"Merchant departure warning now fires at **{MERCHANT_WARN_BEFORE_S}s** remaining.",
-        color=0x00FFA3, timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Config"))
-    await ctx.send(embed=embed)
-
-# ─────────────────────────── BIOME COMMANDS ───────────────────────────────────
-
-@bot.command(name="biomes")
-async def cmd_biomes(ctx):
-    """All biome event counts sorted by frequency."""
-    if not _cmd_guard(ctx): return
-    if not biome_counts:
-        await ctx.send(embed=discord.Embed(description="No biome data yet.", color=0x36393F))
-        return
-    lines = [
-        f"{BIOME_EMOJIS.get(k,'❓')} **{k}**: `{v}` events  *(cap: {calculate_macro_capacity(k)} accs)*"
-        for k, v in sorted(biome_counts.items(), key=lambda x: -x[1])
-    ]
-    embed = discord.Embed(title="🌍  Biome Event Counters",
-                          description="\n".join(lines), color=0x9B59B6,
-                          timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="Grand Total", value=f"`{sum(biome_counts.values())}`", inline=True)
-    embed.set_footer(text=_zite_footer("Biome Stats"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="biomeinfo")
-async def cmd_biome_info(ctx, *, name: str):
-    """Detailed info about a biome: !biomeinfo SINGULARITY"""
-    if not _cmd_guard(ctx): return
-    bname = name.upper()
-    limit = EVENT_SESSION_LIMITS.get(bname)
-    tip   = BIOME_TIPS.get(bname, "No tactical data available.")
-    emoji = BIOME_EMOJIS.get(bname, "❓")
-    color = BIOME_COLORS.get(bname, 0x778899)
-    cap   = calculate_macro_capacity(bname)
-    count = biome_counts.get(bname, 0)
-    embed = discord.Embed(title=f"{emoji}  Biome Info — {bname}", color=color,
-                          timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="⏱️ Session Limit", value=f"`{_fmt_duration(limit)}`" if limit else "`Unknown`", inline=True)
-    embed.add_field(name="🧮 Macro Capacity",value=f"`{cap} accs`", inline=True)
-    embed.add_field(name="📊 Total Seen",    value=f"`{count}`",    inline=True)
-    embed.add_field(name="💡 Tip",           value=tip,             inline=False)
-    embed.set_footer(text=_zite_footer("Biome Info"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="livebiomes")
-async def cmd_live_biomes(ctx):
-    """Show all currently active biome sessions."""
-    if not _cmd_guard(ctx): return
-    live = [ev for ev in active_live_events.values() if ev.get("type") == "biome"]
-    if not live:
-        await ctx.send(embed=discord.Embed(description="No active biome sessions.", color=0x36393F))
-        return
-    now   = datetime.now(timezone.utc)
-    lines = []
-    for ev in live:
-        elapsed = (now - datetime.fromisoformat(ev["started_at"])).total_seconds()
-        limit   = EVENT_SESSION_LIMITS.get(ev["name"], 0)
-        left    = max(0, limit - elapsed)
-        emoji   = BIOME_EMOJIS.get(ev["name"], "❓")
-        lines.append(
-            f"{emoji} **{ev['name']}** — `#{ev['channel_name']}` | `{ev.get('account_identity','?')}`"
-            f"\n   ⏳ Elapsed: `{_fmt_duration(elapsed)}` | Remaining: `{_fmt_duration(left)}`"
+    # Send summary to user DM
+    try:
+        await member.send(
+            content=(
+                "✅ **Your Macro Application has been submitted!**\n\n"
+                "If you have any questions or struggles with the macro, "
+                "**our staffs are here to help you!** 🙌"
+            ),
+            embed=summary_embed,
         )
-    embed = discord.Embed(title=f"🟢  Live Biome Sessions ({len(live)})",
-                          description="\n\n".join(lines), color=0x00FFA3,
-                          timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Live Biomes"))
-    await ctx.send(embed=embed)
+    except discord.Forbidden:
+        log.warning(f"APPLI: Cannot DM {member} — DMs closed.")
 
-# ─────────────────────────── MERCHANT COMMANDS ────────────────────────────────
-
-@bot.command(name="merchants")
-async def cmd_merchants(ctx):
-    """All merchant event counts."""
-    if not _cmd_guard(ctx): return
-    if not merchant_counts:
-        await ctx.send(embed=discord.Embed(description="No merchant data yet.", color=0x36393F))
-        return
-    lines = [
-        f"{MERCHANT_EMOJIS.get(k,'🏪')} **{k}**: `{v}` events  *(cap: {calculate_macro_capacity(k)} accs)*"
-        for k, v in sorted(merchant_counts.items(), key=lambda x: -x[1])
-    ]
-    embed = discord.Embed(title="🏪  Merchant Event Counters",
-                          description="\n".join(lines), color=0xF59E0B,
-                          timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="Grand Total", value=f"`{sum(merchant_counts.values())}`", inline=True)
-    embed.set_footer(text=_zite_footer("Merchant Stats"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="merchantinfo")
-async def cmd_merchant_info(ctx, *, name: str):
-    """Detailed info about a merchant: !merchantinfo MARI"""
-    if not _cmd_guard(ctx): return
-    upper = name.upper()
-    mname = None
-    for key in MERCHANT_TIPS:
-        if upper in key or key in upper:
-            mname = key; break
-    if not mname:
-        mname = "MERCHANT"
-    emoji  = MERCHANT_EMOJIS.get(mname, "🏪")
-    color  = MERCHANT_COLORS.get(mname, 0xF59E0B)
-    tip    = MERCHANT_TIPS.get(mname, "Standard merchant.")
-    limit  = EVENT_SESSION_LIMITS.get(mname, 180)
-    cap    = calculate_macro_capacity(mname)
-    count  = merchant_counts.get(mname, 0)
-    embed  = discord.Embed(title=f"{emoji}  Merchant Info — {mname}", color=color,
-                           timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="⏱️ Session Window", value=f"`{_fmt_duration(limit)}`", inline=True)
-    embed.add_field(name="🧮 Macro Capacity", value=f"`{cap} accs`",             inline=True)
-    embed.add_field(name="📊 Total Seen",     value=f"`{count}`",                inline=True)
-    embed.add_field(name="💡 Intel",          value=tip,                          inline=False)
-    embed.set_footer(text=_zite_footer("Merchant Info"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="livemerchants")
-async def cmd_live_merchants(ctx):
-    """Show all currently active merchant sessions."""
-    if not _cmd_guard(ctx): return
-    live = [ev for ev in active_live_events.values() if ev.get("type") == "merchant"]
-    if not live:
-        await ctx.send(embed=discord.Embed(description="No active merchant sessions.", color=0x36393F))
-        return
-    now   = datetime.now(timezone.utc)
-    lines = []
-    for ev in live:
-        elapsed = (now - datetime.fromisoformat(ev["started_at"])).total_seconds()
-        limit   = EVENT_SESSION_LIMITS.get(ev["name"], 180)
-        left    = max(0, limit - elapsed)
-        emoji   = MERCHANT_EMOJIS.get(ev["name"], "🏪")
-        cap     = calculate_macro_capacity(ev["name"])
-        lines.append(
-            f"{emoji} **{ev['name']}** — `#{ev['channel_name']}` | `{ev.get('account_identity','?')}`"
-            f"\n   ⏳ Elapsed: `{_fmt_duration(elapsed)}` | Remaining: `{_fmt_duration(left)}` | Cap: `{cap} accs`"
+    # Send copy to server-output
+    server_output_ch = bot.get_channel(SERVER_OUTPUT_CHANNEL_ID)
+    if server_output_ch:
+        notif_embed = discord.Embed(
+            title="📬  New Macro Application Submitted",
+            description=f"{member.mention} has submitted a macro application!",
+            color=0x00FFA3,
+            timestamp=datetime.now(timezone.utc),
         )
-    embed = discord.Embed(title=f"🟢  Live Merchant Sessions ({len(live)})",
-                          description="\n\n".join(lines), color=0xF59E0B,
-                          timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Live Merchants"))
-    await ctx.send(embed=embed)
+        notif_embed.set_thumbnail(url=member.display_avatar.url)
+        notif_embed.add_field(name="👤 User",          value=f"{member.mention} (`{member.id}`)", inline=True)
+        notif_embed.add_field(name="🖥️ Device",        value=f"`{state.get('device','?')}`",      inline=True)
+        notif_embed.add_field(name="🤖 Macro",         value=f"`{state.get('macro','?')}`",        inline=True)
+        notif_embed.add_field(name="⏰ Hours/Day",     value=f"`{state.get('hours','?')}h`",        inline=True)
+        notif_embed.add_field(name="🕐 AFK Window",   value=f"`{state.get('time_window','?')}`",   inline=True)
+        notif_embed.add_field(name="🎭 Role Granted",  value="✅ Yes" if role_granted else "❌ Failed", inline=True)
+        notif_embed.set_footer(text=f"Macro Application  •  Zite Bot  •  {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}")
+        await server_output_ch.send(embed=notif_embed)
+        await server_output_ch.send(embed=summary_embed)
 
-# ─────────────────────────── LIVE / ALL EVENTS ────────────────────────────────
+    log.info(f"APPLI: {member} submitted macro application | "
+             f"device={state.get('device')} macro={state.get('macro')} "
+             f"hours={state.get('hours')} role_granted={role_granted}")
 
-@bot.command(name="live")
-async def cmd_live(ctx):
-    """All currently active events (biomes + merchants)."""
-    if not _cmd_guard(ctx): return
-    if not active_live_events:
-        await ctx.send(embed=discord.Embed(description="No active events right now.", color=0x36393F))
+    app_state.pop(member.id, None)
+
+
+# ── 18. Bot Commands ──────────────────────────────────────────────────────────
+
+@bot.command(name="macrosappli")
+async def cmd_macros_appli(ctx):
+    """
+    Admin-deployable macro application form.
+    Can be used in any channel whose name contains '-ticket'.
+    """
+    # Must be in a ticket channel
+    if "-ticket" not in ctx.channel.name.lower():
+        await ctx.send(
+            embed=discord.Embed(
+                description="❌ This command can only be used in ticket channels (channel name must contain `-ticket`).",
+                color=0xFF2A2A,
+            ),
+            delete_after=10,
+        )
         return
-    now   = datetime.now(timezone.utc)
-    lines = []
-    for ev in active_live_events.values():
-        elapsed = (now - datetime.fromisoformat(ev["started_at"])).total_seconds()
-        limit   = EVENT_SESSION_LIMITS.get(ev["name"], 0)
-        left    = max(0, limit - elapsed)
-        is_m    = ev.get("type") == "merchant"
-        emoji   = MERCHANT_EMOJIS.get(ev["name"], "🏪") if is_m else BIOME_EMOJIS.get(ev["name"], "❓")
-        icon    = "🏪" if is_m else "🌍"
-        lines.append(
-            f"{icon}{emoji} **{ev['name']}** `[{ev['type'].upper()}]` — `#{ev['channel_name']}`"
-            f"\n   `{ev.get('account_identity','?')}` | Elapsed `{_fmt_duration(elapsed)}` | Left `{_fmt_duration(left)}`"
-        )
-    embed = discord.Embed(title=f"⚡  All Live Events ({len(active_live_events)})",
-                          description="\n\n".join(lines), color=0xFF2A2A,
-                          timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Live Events"))
-    await ctx.send(embed=embed)
 
-# ─────────────────────────── WEBSITE / METRICS ────────────────────────────────
+    # Delete the invoking message to keep the channel clean
+    try:
+        await ctx.message.delete()
+    except discord.Forbidden:
+        pass
 
-@bot.command(name="metrics")
-async def cmd_metrics(ctx):
-    """Full metrics snapshot (mirrors /api/metrics)."""
-    if not _cmd_guard(ctx): return
-    m = get_metrics_payload()
-    t = m["telemetry"]
-    embed = discord.Embed(title="📈  Full Metrics Snapshot", color=0x00E5FF,
-                          timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="🟢 Status",          value=f"`{m['status']}`",                   inline=True)
-    embed.add_field(name="⏱️ Uptime",          value=f"`{m['uptime']}`",                   inline=True)
-    embed.add_field(name="🕐 Timestamp",       value=f"`{m['timestamp'][11:19]} UTC`",      inline=True)
-    embed.add_field(name="📡 Total Channels",  value=f"`{t['total_registered_webhooks']}`", inline=True)
-    embed.add_field(name="🔴 Active (10m)",    value=f"`{t['active_webhooks_last_10m']}`",  inline=True)
-    embed.add_field(name="🔎 Detected",        value=f"`{t['total_detected_channels']}`",   inline=True)
-    embed.add_field(name="🌍 Total Biomes",    value=f"`{t['grand_total_biomes']}`",         inline=True)
-    embed.add_field(name="🏪 Total Merchants", value=f"`{t['grand_total_merchants']}`",      inline=True)
-    embed.add_field(name="⚡ Live Events",     value=f"`{t['active_live_events']}`",         inline=True)
-    embed.add_field(name="📊 Biome Breakdown",
-                    value="\n".join(f"`{k}`: {v}" for k, v in sorted(
-                        biome_counts.items(), key=lambda x: -x[1])[:8]) or "None",
-                    inline=False)
-    embed.add_field(name="🏪 Merchant Breakdown",
-                    value="\n".join(f"`{k}`: {v}" for k, v in sorted(
-                        merchant_counts.items(), key=lambda x: -x[1])[:6]) or "None",
-                    inline=False)
-    embed.set_footer(text=_zite_footer("Metrics"))
-    await ctx.send(embed=embed)
+    embed = _build_application_start_embed()
+    view  = DeviceSelectView(owner_id=0)   # owner_id=0 means "anyone can claim"
+    msg   = await ctx.send(embed=embed, view=view)
 
-@bot.command(name="metricsraw")
-async def cmd_metrics_raw(ctx):
-    """Export raw metrics as a JSON file."""
-    if not _cmd_guard(ctx): return
-    payload = get_metrics_payload()
-    tmp     = "metrics_export.json"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    await ctx.send(content="📦 Raw metrics export:", file=discord.File(tmp))
-    try: os.remove(tmp)
-    except: pass
-
-@bot.command(name="website")
-async def cmd_website(ctx):
-    """Get the website dashboard URL and API endpoint."""
-    if not _cmd_guard(ctx): return
-    render_url = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:10000")
-    embed      = discord.Embed(title="🌐  Website & API Info", color=0x00E5FF,
-                               timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="🖥️ Dashboard",  value=f"`{render_url}/`",              inline=False)
-    embed.add_field(name="📡 API",        value=f"`{render_url}/api/metrics`",    inline=False)
-    embed.add_field(name="⚡ Zite API",   value=f"`{render_url}/api/zite`",       inline=False)
-    embed.add_field(name="⏱️ Uptime",    value=f"`{_fmt_uptime(BOT_START_TIME)}`", inline=True)
-    embed.add_field(name="🔄 Refresh",   value="`Every 15s (auto)`",              inline=True)
-    embed.set_footer(text=_zite_footer("Website"))
-    await ctx.send(embed=embed)
-
-# ─────────────────────────── DATABASE / BACKUP ────────────────────────────────
-
-@bot.command(name="backup")
-async def cmd_backup(ctx):
-    """Force a cloud backup right now."""
-    if not _cmd_guard(ctx): return
-    global _last_backup_time
-    _last_backup_time = 0.0
-    await backup_state_to_discord_cloud()
-    embed = discord.Embed(title="☁️  Cloud Backup Triggered",
-                          description="State has been uploaded to `telemetry-state-db`.",
-                          color=0x00FFA3, timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Backup"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="restore")
-async def cmd_restore(ctx):
-    """Force restore from cloud backup."""
-    if not _cmd_guard(ctx): return
-    ok = await load_state_from_discord_cloud()
-    embed = discord.Embed(
-        title="✅  Restored from Cloud" if ok else "❌  Restore Failed",
-        description="State loaded from latest attachment." if ok else "No valid backup found in `telemetry-state-db`.",
-        color=0x00FFA3 if ok else 0xFF2A2A, timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Restore"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="savemetrics")
-async def cmd_save_metrics(ctx):
-    """Force-save metrics to local disk now."""
-    if not _cmd_guard(ctx): return
-    global _last_save_time
-    _last_save_time = 0.0
-    save_persisted_metrics()
-    embed = discord.Embed(title="💾  Metrics Saved",
-                          description=f"Written to `{DATA_STORE_PATH}`.",
-                          color=0x00FFA3, timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Save"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="clearevents")
-async def cmd_clear_events(ctx):
-    """Clear all active live events (use with caution)."""
-    if not _cmd_guard(ctx): return
-    count = len(active_live_events)
-    active_live_events.clear()
-    _departure_warned.clear()
-    embed = discord.Embed(title="🗑️  Live Events Cleared",
-                          description=f"Removed `{count}` active event(s).",
-                          color=0xFF4500, timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Clear"))
-    await ctx.send(embed=embed)
-
-# ─────────────────────────── CAPACITY CALCULATOR ──────────────────────────────
-
-@bot.command(name="capacity", aliases=["cap"])
-async def cmd_capacity(ctx, *, event_name: str):
-    """Calculate macro capacity for any event: !capacity SINGULARITY"""
-    if not _cmd_guard(ctx): return
-    name_up = event_name.upper()
-    cap_40  = calculate_macro_capacity(name_up, avg=40, buf=15)
-    cap_30  = calculate_macro_capacity(name_up, avg=30, buf=15)
-    cap_60  = calculate_macro_capacity(name_up, avg=60, buf=15)
-    limit   = EVENT_SESSION_LIMITS.get(name_up)
-    is_m    = any(k in name_up for k in ("MERCHANT","MARI","JESTER","RIN"))
-    emoji   = MERCHANT_EMOJIS.get(name_up, "🏪") if is_m else BIOME_EMOJIS.get(name_up, "❓")
-    color   = MERCHANT_COLORS.get(name_up, 0xF59E0B) if is_m else BIOME_COLORS.get(name_up, 0x778899)
-    embed   = discord.Embed(title=f"{emoji}  Capacity — {name_up}", color=color,
-                            timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="⏱️ Session Limit", value=f"`{_fmt_duration(limit)}`" if limit else "`Unknown`", inline=True)
-    embed.add_field(name="🧮 30s cycle",     value=f"`{cap_30} accounts`", inline=True)
-    embed.add_field(name="🧮 40s cycle",     value=f"`{cap_40} accounts`", inline=True)
-    embed.add_field(name="🧮 60s cycle",     value=f"`{cap_60} accounts`", inline=True)
-    embed.set_footer(text=_zite_footer("Capacity Calculator"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="sessionlimits", aliases=["limits"])
-async def cmd_session_limits(ctx):
-    """Show all known event session time limits."""
-    if not _cmd_guard(ctx): return
-    biome_lines    = []
-    merchant_lines = []
-    for name, sec in sorted(EVENT_SESSION_LIMITS.items(), key=lambda x: -x[1]):
-        is_m  = any(k in name for k in ("MERCHANT","MARI","JESTER","RIN"))
-        emoji = MERCHANT_EMOJIS.get(name,"🏪") if is_m else BIOME_EMOJIS.get(name,"❓")
-        line  = f"{emoji} **{name}**: `{_fmt_duration(sec)}`  *(cap: {calculate_macro_capacity(name)} accs)*"
-        if is_m: merchant_lines.append(line)
-        else:    biome_lines.append(line)
-    embed = discord.Embed(title="⏱️  Session Time Limits", color=0xA78BFA,
-                          timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="🌍 Biomes",    value="\n".join(biome_lines)    or "None", inline=False)
-    embed.add_field(name="🏪 Merchants", value="\n".join(merchant_lines) or "None", inline=False)
-    embed.set_footer(text=_zite_footer("Session Limits"))
-    await ctx.send(embed=embed)
-
-# ─────────────────────────── DISCORD MANAGER ──────────────────────────────────
-
-@bot.command(name="serverinfo")
-async def cmd_server_info(ctx):
-    """Info about the current Discord server."""
-    if not _cmd_guard(ctx): return
-    g     = ctx.guild
-    embed = discord.Embed(title=f"🏛️  Server Info — {g.name}", color=0x5865F2,
-                          timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="ID",             value=f"`{g.id}`",           inline=True)
-    embed.add_field(name="Owner",          value=f"`{g.owner}`",        inline=True)
-    embed.add_field(name="Members",        value=f"`{g.member_count}`", inline=True)
-    embed.add_field(name="Text Channels",  value=f"`{len(g.text_channels)}`",  inline=True)
-    embed.add_field(name="Voice Channels", value=f"`{len(g.voice_channels)}`", inline=True)
-    embed.add_field(name="Roles",          value=f"`{len(g.roles)}`",   inline=True)
-    embed.add_field(name="Boost Level",    value=f"`{g.premium_tier}`", inline=True)
-    embed.add_field(name="Boosts",         value=f"`{g.premium_subscription_count}`", inline=True)
-    embed.add_field(name="Created",        value=f"`{g.created_at.strftime('%Y-%m-%d')}`", inline=True)
-    if g.icon:
-        embed.set_thumbnail(url=g.icon.url)
-    embed.set_footer(text=_zite_footer("Server Info"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="guilds")
-async def cmd_guilds(ctx):
-    """List all guilds the bot is in."""
-    if not _cmd_guard(ctx): return
-    lines = [f"`{g.id}` — **{g.name}** ({g.member_count} members)" for g in bot.guilds]
-    embed = discord.Embed(title=f"🏛️  Guilds ({len(bot.guilds)})",
-                          description="\n".join(lines), color=0x5865F2,
-                          timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Guilds"))
-    await ctx.send(embed=embed)
-
-@bot.command(name="pinned")
-async def cmd_pinned(ctx, channel: discord.TextChannel = None):
-    """List pinned messages in a channel: !pinned #channel"""
-    if not _cmd_guard(ctx): return
-    ch   = channel or ctx.channel
-    pins = await ch.pins()
-    if not pins:
-        await ctx.send(embed=discord.Embed(description=f"No pinned messages in <#{ch.id}>.", color=0x36393F))
-        return
-    lines = [
-        f"`{p.id}` — {p.author.display_name}: {p.content[:60] or '[embed]'}"
-        for p in pins[:15]
-    ]
-    embed = discord.Embed(title=f"📌  Pinned Messages in #{ch.name} ({len(pins)})",
-                          description="\n".join(lines), color=0xFFD700,
-                          timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=_zite_footer("Pinned"))
-    await ctx.send(embed=embed)
-
-# ─────────────────────────── INTERACTIVE HELP ────────────────────────────────
-
-HELP_SECTIONS = {
-    "⚙️ System": {
-        "desc": "Bot status, uptime, metrics, and website dashboard.",
-        "commands": [
-            ("`!uptime`",       "Bot & Render uptime + RAM/CPU usage"),
-            ("`!status`",       "Full system snapshot"),
-            ("`!ping`",         "Gateway latency"),
-            ("`!metrics`",      "Live telemetry counters"),
-            ("`!metricsraw`",   "Download raw JSON metrics export"),
-            ("`!website`",      "Dashboard & API URLs"),
-        ],
-        "color": 0x00E5FF,
-    },
-    "📡 Webhooks": {
-        "desc": "Monitor and inspect webhook feed channels.",
-        "commands": [
-            ("`!webhooks`",                "Total/active webhook count"),
-            ("`!webhooklist`",             "All registered webhook channels"),
-            ("`!webhookinfo <name>`",       "Per-channel detail & accounts"),
-            ("`!webhookaccounts <name>`",  "All accounts tracked in a channel"),
-        ],
-        "color": 0xA78BFA,
-    },
-    "🔎 Channels": {
-        "desc": "Manage auto-detection of monitored channels.",
-        "commands": [
-            ("`!channels`",            "Detection breakdown overview"),
-            ("`!channellist`",         "All auto-detected channel IDs"),
-            ("`!channelinfo [#ch]`",   "Per-channel flags & stats"),
-            ("`!addchannel #ch`",      "Manually add a channel to monitor"),
-            ("`!removechannel #ch`",   "Stop monitoring a channel"),
-        ],
-        "color": 0x00FFA3,
-    },
-    "🛠️ Config": {
-        "desc": "Adjust bot detection settings and thresholds.",
-        "commands": [
-            ("`!config`",                    "View current settings"),
-            ("`!addcontainer <id>`",         "Add a guild/category to auto-detect"),
-            ("`!removecontainer <id>`",      "Remove a guild/category"),
-            ("`!addwhitelist <id>`",         "Add a channel to static whitelist"),
-            ("`!removewhitelist <id>`",      "Remove from static whitelist"),
-            ("`!setwarntime <s>`",           "Set merchant departure warning time"),
-        ],
-        "color": 0xF59E0B,
-    },
-    "🌍 Biomes": {
-        "desc": "Track and inspect Sol's RNG biome events.",
-        "commands": [
-            ("`!biomes`",          "All biome event counts"),
-            ("`!biomeinfo <name>`", "Session limits, capacity & strategy tip"),
-            ("`!livebiomes`",      "All currently active biome sessions"),
-        ],
-        "color": 0x9B59B6,
-    },
-    "🏪 Merchants": {
-        "desc": "Monitor merchant spawns and departure timers.",
-        "commands": [
-            ("`!merchants`",           "All merchant event counts"),
-            ("`!merchantinfo <name>`", "Intel, window length & capacity"),
-            ("`!livemerchants`",       "All currently active merchant windows"),
-        ],
-        "color": 0xF59E0B,
-    },
-    "⚡ Live Events": {
-        "desc": "See all active biome & merchant sessions in real time.",
-        "commands": [
-            ("`!live`",         "All active biomes + merchants"),
-            ("`!clearevents`",  "⚠️ Wipe all live sessions"),
-        ],
-        "color": 0xFF2A2A,
-    },
-    "🧮 Calculator": {
-        "desc": "Calculate how many macro accounts fit in a session window.",
-        "commands": [
-            ("`!capacity <name>`",  "30s / 40s / 60s cycle caps for any biome/merchant"),
-            ("`!sessionlimits`",    "Full session time table for all events"),
-        ],
-        "color": 0x00E5FF,
-    },
-    "☁️ Data & Backup": {
-        "desc": "Cloud backup, restore, and local persistence tools.",
-        "commands": [
-            ("`!backup`",      "Force a cloud backup right now"),
-            ("`!restore`",     "Restore from latest cloud backup"),
-            ("`!savemetrics`", "Force local disk save"),
-        ],
-        "color": 0x00FFA3,
-    },
-    "🏛️ Discord": {
-        "desc": "Server info and Discord management utilities.",
-        "commands": [
-            ("`!serverinfo`",    "Guild stats overview"),
-            ("`!guilds`",        "All guilds the bot is in"),
-            ("`!pinned [#ch]`",  "List pinned messages in a channel"),
-        ],
-        "color": 0x5865F2,
-    },
-    "📖 Sol's RNG Wiki": {
-        "desc": "Look up Sol's RNG game information: biomes, auras, events, items, NPCs.",
-        "commands": [
-            ("`!wiki biome <name>`",    "Info about a biome (spawn rate, auras, tips)"),
-            ("`!wiki aura <name>`",     "Look up an aura's rarity and biome"),
-            ("`!wiki event <name>`",    "Info about a seasonal event and its auras"),
-            ("`!wiki npc <name>`",      "Info about an NPC in the game"),
-            ("`!wiki item <name>`",     "Info about a potion, gear, or item"),
-            ("`!wiki biomes`",          "List all biomes"),
-            ("`!wiki auras`",           "List aura rarity tiers"),
-            ("`!wiki events`",          "List all seasonal events"),
-        ],
-        "color": 0xFF69B4,
-    },
-}
-
-def _build_help_overview_embed():
-    embed = discord.Embed(
-        title="📖  Zite Telemetry Bot — Interactive Help",
-        description=(
-            f"Commands must be used in <#{CMD_CHANNEL_ID}>. **Prefix:** `!`\n\n"
-            "**Choose a category below** to see its commands:\n\u200b"
-        ),
-        color=0x00E5FF,
-        timestamp=datetime.now(timezone.utc),
-    )
-    for section, data in HELP_SECTIONS.items():
-        embed.add_field(
-            name=section,
-            value=data["desc"],
-            inline=True,
-        )
-    embed.add_field(
-        name="\u200b",
-        value=(
-            "\n**Quick Start:**\n"
-            "> `!ping` → check bot is alive\n"
-            "> `!live` → see all active events\n"
-            "> `!biomes` / `!merchants` → event history\n"
-            "> `!capacity <name>` → calc account capacity"
-        ),
-        inline=False,
-    )
-    embed.set_footer(text=_zite_footer("Help  •  v3.0  •  Select a category"))
-    return embed
-
-def _build_help_section_embed(section_key: str):
-    data   = HELP_SECTIONS[section_key]
-    embed  = discord.Embed(
-        title=f"{section_key} — Commands",
-        description=data["desc"] + "\n\u200b",
-        color=data["color"],
-        timestamp=datetime.now(timezone.utc),
-    )
-    for cmd, desc in data["commands"]:
-        embed.add_field(name=cmd, value=desc, inline=False)
-    embed.set_footer(text=_zite_footer(f"Help  •  {section_key}"))
-    return embed
-
-class HelpCategorySelect(discord.ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(
-                label=section,
-                description=data["desc"][:80],
-                value=section,
-            )
-            for section, data in HELP_SECTIONS.items()
-        ]
-        super().__init__(
-            placeholder="📂 Choose a command category...",
-            min_values=1,
-            max_values=1,
-            options=options,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        section = self.values[0]
-        embed   = _build_help_section_embed(section)
-        await interaction.response.edit_message(embed=embed, view=self.view)
-
-class HelpBackButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="← Back to Overview", style=discord.ButtonStyle.secondary, row=1)
-
-    async def callback(self, interaction: discord.Interaction):
-        embed = _build_help_overview_embed()
-        await interaction.response.edit_message(embed=embed, view=self.view)
-
-class HelpView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=120)
-        self.add_item(HelpCategorySelect())
-        self.add_item(HelpBackButton())
-
-    async def on_timeout(self):
-        for item in self.children:
-            item.disabled = True
-
-@bot.command(name="help", aliases=["h", "commands", "cmds"])
-async def cmd_help(ctx):
-    """Interactive help menu with category selector."""
-    if not _cmd_guard(ctx): return
-    embed = _build_help_overview_embed()
-    view  = HelpView()
-    await ctx.send(embed=embed, view=view)
+    log.info(f"APPLI: Application posted in #{ctx.channel.name} by {ctx.author} (msg={msg.id})")
 
 
-# ── 17. Bot Events ────────────────────────────────────────────────────────────
+# ── 19. Bot Events ────────────────────────────────────────────────────────────
 
 @bot.event
 async def on_ready():
@@ -1923,6 +1787,7 @@ async def on_ready():
         merchant_departure_watchdog.start()
     if not live_event_cleanup.is_running():
         live_event_cleanup.start()
+
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -1941,10 +1806,8 @@ async def on_member_join(member: discord.Member):
             f"Hey {member.mention}, glad you're here! 🎉\n\n"
             f"**Getting started:**\n"
             f"> **1.** Read the server rules in your rules channel.\n"
-            f"> **2.** Head to <#{CMD_CHANNEL_ID}> to run bot commands.\n"
-            f"> **3.** Use `!help` for the full command list.\n"
-            f"> **4.** Use `!live` to see all active biome & merchant sessions.\n"
-            f"> **5.** Use `!capacity <name>` to calculate how many accounts fit in a window.\n\n"
+            f"> **2.** Use `!macrosappli` in your ticket channel to apply to macro.\n"
+            f"> **3.** Use `!live` to see all active biome & merchant sessions.\n\n"
             f"If you need help, tag a moderator or ask in the right channel. Have fun! 🚀"
         ),
         color=0x00FFA3,
@@ -1955,7 +1818,7 @@ async def on_member_join(member: discord.Member):
     embed.add_field(name="🆔 User ID",     value=f"`{member.id}`",                inline=True)
     embed.add_field(name="📅 Account Age", value=f"`{account_age_days} days`",    inline=True)
     embed.add_field(name="👥 Member #",    value=f"`{member.guild.member_count}`", inline=True)
-    embed.set_footer(text=_zite_footer(f"Welcome  •  {member.guild.name}"))
+    embed.set_footer(text=f"Welcome  •  {member.guild.name}  •  {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}")
 
     try:
         await dest.send(embed=embed)
@@ -1965,38 +1828,36 @@ async def on_member_join(member: discord.Member):
     except Exception as e:
         log.error(f"WELCOME: {e}")
 
+
 @bot.event
 async def on_guild_channel_create(channel):
     if isinstance(channel, discord.TextChannel):
         _register_channel(channel)
+
 
 @bot.event
 async def on_guild_channel_update(before, after):
     if isinstance(after, discord.TextChannel):
         _register_channel(after)
 
+
 @bot.event
 async def on_command_error(ctx, error):
-    if not _cmd_guard(ctx):
+    if isinstance(error, commands.CommandNotFound):
         return
-    embed = discord.Embed(
-        title="❌  Command Error",
-        description=f"```\n{str(error)[:900]}\n```",
-        color=0xFF2A2A, timestamp=datetime.now(timezone.utc))
-    embed.add_field(name="Command", value=f"`{ctx.message.content[:100]}`", inline=False)
-    embed.set_footer(text=_zite_footer("Error Handler"))
-    await ctx.send(embed=embed)
+    log.error(f"CMD ERROR in #{ctx.channel.name}: {error}")
+
 
 @bot.event
 async def on_message(message: discord.Message):
     if message.author == bot.user:
         return
 
-    # ── website-output: plain text passthrough only ───────────────────────
+    # ── website-output: auto-pin errors ──────────────────────────────────
     if message.channel.id == EXTENDED_LOG_CHANNEL_ID and message.content:
         await maybe_auto_pin_error(message)
 
-    # ── Allow commands (only in CMD channel) ─────────────────────────────
+    # ── Allow commands ────────────────────────────────────────────────────
     await bot.process_commands(message)
 
     # ── Skip non-monitored channels ───────────────────────────────────────
@@ -2019,6 +1880,11 @@ async def on_message(message: discord.Message):
 
     combined_full, roblox_link, link_vector = _extract_combined_text(message)
 
+    # Detect macro source from first embed (most reliable)
+    macro_source = "Unknown Macro"
+    if message.embeds:
+        macro_source = _detect_macro_source(message.embeds[0])
+
     if not is_forwarder:
         if cid_str not in webhook_activity:
             webhook_activity[cid_str] = {
@@ -2030,16 +1896,29 @@ async def on_message(message: discord.Message):
             webhook_activity[cid_str]["total_messages"] += 1
             webhook_activity[cid_str].setdefault("accounts", {})
 
+        # Use roblox_link as account key, or fallback to account number
         if roblox_link:
             acc_reg = webhook_activity[cid_str]["accounts"]
             if roblox_link not in acc_reg:
                 acc_reg[roblox_link] = {
                     "display_name": f"Account {len(acc_reg)+1}",
                     "biomes": {}, "merchants": {}, "completed_sessions": [],
+                    "macro_source": macro_source,
                 }
             account_identity = acc_reg[roblox_link]["display_name"]
         else:
-            account_identity = "Account 1"
+            # Coteab and others may not have PS link in start message
+            # Try to find an existing account or create one per channel
+            acc_reg = webhook_activity[cid_str]["accounts"]
+            # Use a sentinel key per macro source so we can still track
+            sentinel_key = f"__no_link_{macro_source}_{cid_str}__"
+            if sentinel_key not in acc_reg:
+                acc_reg[sentinel_key] = {
+                    "display_name": f"Account {len(acc_reg)+1} [{macro_source}]",
+                    "biomes": {}, "merchants": {}, "completed_sessions": [],
+                    "macro_source": macro_source,
+                }
+            account_identity = acc_reg[sentinel_key]["display_name"]
     else:
         account_identity = "Forwarder Source"
 
@@ -2049,10 +1928,27 @@ async def on_message(message: discord.Message):
     guild_name = message.guild.name if message.guild else "Private Guild"
 
     for emb in message.embeds:
+        # Per-embed link extraction (Coteab puts PS in embed field)
+        emb_link, emb_vector = _extract_private_server_link(emb, macro_source)
+        if emb_link:
+            roblox_link = emb_link
+            link_vector = emb_vector
+            # Re-register under the correct PS link key
+            if not is_forwarder and roblox_link:
+                acc_reg = webhook_activity[cid_str]["accounts"]
+                if roblox_link not in acc_reg:
+                    acc_reg[roblox_link] = {
+                        "display_name": f"Account {len(acc_reg)+1}",
+                        "biomes": {}, "merchants": {}, "completed_sessions": [],
+                        "macro_source": macro_source,
+                    }
+                account_identity = acc_reg[roblox_link]["display_name"]
+
         parts = []
         if emb.title:                       parts.append(emb.title)
         if emb.description:                 parts.append(emb.description)
         if emb.author and emb.author.name:  parts.append(emb.author.name)
+        if emb.footer and emb.footer.text:  parts.append(emb.footer.text)
         for f in emb.fields:
             if f.name:  parts.append(f.name)
             if f.value: parts.append(f.value)
@@ -2062,459 +1958,19 @@ async def on_message(message: discord.Message):
         is_start       = bool(EVENT_START_RE.search(combined_lower))
         is_end         = bool(EVENT_END_RE.search(combined_lower))
 
-        if is_end:
-            print(f"DEBUG: END trigger -> {combined_lower[:60]}")
         if not is_start and not is_end:
             continue
 
-        is_merchant = any(kw in combined_lower for kw in ("merchant","mari","jester","rin"))
+        is_merchant = any(kw in combined_lower for kw in
+                          ("merchant", "mari", "jester", "rin", "black merchant"))
         if is_merchant:
             await _process_merchant(message, combined_lower, is_start, cid_str,
                                     now_iso, guild_name, roblox_link, link_vector,
-                                    account_identity, is_forwarder, t0)
+                                    account_identity, is_forwarder, t0, macro_source)
         else:
             await _process_biome(message, combined_text, combined_lower, is_start,
                                  cid_str, now_iso, guild_name, roblox_link, link_vector,
-                                 account_identity, is_forwarder, t0)
-
-# ─────────────────────────── SOL'S RNG WIKI ──────────────────────────────────
-
-WIKI_BIOMES = {
-    "NORMAL": {
-        "desc": "The default, grassy, plain biome. No special features. Active when no other biome is present.",
-        "spawn": "Default (always active between biomes)",
-        "duration": "Until another biome spawns",
-        "bt": "N/A",
-        "auras": "None",
-        "item": "None",
-        "color": 0x778899,
-        "emoji": "🌿",
-        "tip": "Rotate accounts freely. Good baseline for farming common auras.",
-    },
-    "WINDY": {
-        "desc": "A refreshing and cool wind passes through the world. Leaves blow and wind swirls to the East.",
-        "spawn": "1 in 500/s (0.2%/s)",
-        "duration": "2 minutes",
-        "bt": "3x multiplier",
-        "auras": "**Wind** (1/300), **Flow** (1/29k), **Stormal** (1/30k), **Vortex** (1/133k), **Stormal: Hurricane** (1/4.5M), **Aviator** (1/8M), **Maelstrom** (1/103M)",
-        "item": "Wind Essence (crafting + Grail +2% Luck, +1% Speed)",
-        "color": 0xADD8E6,
-        "emoji": "💨",
-        "tip": "Short 2-minute window. Fast-cycle accounts only. Queue immediately on spawn.",
-    },
-    "SNOWY": {
-        "desc": "White snow and cold begin to cover the surroundings. Ground turns white with thin mist.",
-        "spawn": "1 in 600/s (0.167%/s)",
-        "duration": "2 minutes",
-        "bt": "3x multiplier",
-        "auras": "**Glacier** (1/768), **Permafrost** (1/24.5k), **Blizzard** (1/9.1M), **Chillsear** (1/125M)",
-        "item": "Icicle (crafting + Grail +2% Luck, +1% Speed)",
-        "color": 0xE0F7FA,
-        "emoji": "❄️",
-        "tip": "Short 2-minute window. Replaced by Eggland during Easter. Christmas event turns this into the default biome.",
-    },
-    "RAINY": {
-        "desc": "Strong winds and showers sweep through the world. Gray cloudy fog covers the atmosphere.",
-        "spawn": "1 in 750/s (0.133%/s)",
-        "duration": "2 minutes",
-        "bt": "4x multiplier",
-        "auras": "**Evanescent** (1/840k), **Poseidon** (1/1M), **Sharkyn** (1/2.5M), **Sailor** (1/3M), **Sailor: Flying Dutchman** (1/20M), **Aquaria** (1/20M), **Lumenpool** (1/55M), **Abyssal Hunter** (1/100M), **Sailor: Admiral** (1/135M), **Leviathan** (1/1.73B — no BT!)",
-        "item": "Rainy Bottle (crafting + Grail +2% Luck, +1% Speed)",
-        "color": 0x4682B4,
-        "emoji": "🌧️",
-        "tip": "4x breakthrough. Leviathan is exclusive — can only be rolled during Rainy or Glitched. High-value biome.",
-    },
-    "SANDSTORM": {
-        "desc": "A harsh Sand Storm blocks your path. Desert-like map with sandy texture, yellow leaves.",
-        "spawn": "1 in 3000/s (0.033%/s)",
-        "duration": "~10 minutes 50 seconds (650s)",
-        "bt": "4x multiplier",
-        "auras": "**Gilded** (1/128), **Jackpot** (1/194), **Gilded: Crowned** (1/5k), **Anubis** (1/1.8M), **Outlaw** (1/2M), **Atlas** (1/90M)",
-        "item": "Hourglass (Grail +3% Luck, +1.5% Speed)",
-        "color": 0xC2A35A,
-        "emoji": "🏜️",
-        "tip": "Extended ~10min window. Great for farming Gilded/Jackpot. Hourglass gives 3% Luck at Grail.",
-    },
-    "HELL": {
-        "desc": "A strong and violent energy of chaos overtakes the world. Red leaves, lava waterfalls.",
-        "spawn": "1 in 6666/s (0.015%/s)",
-        "duration": "666 seconds (11m 6s)",
-        "bt": "6x multiplier",
-        "auras": "**Undead** (1/2k), **Undead: Devil** (1/111k), **Hades** (1/1.1M), **Felled** (1/30M), **Bloodlust** (1/50M), **Pythios** (1/111M)",
-        "item": "Eternal Flame (crafting + Grail +5% Luck, +2.5% Speed)",
-        "color": 0xFF2A2A,
-        "emoji": "🔥",
-        "tip": "Exactly 11m 06s. 6x breakthrough — highest of weather biomes. Eternal Flame gives +5% Luck at Grail.",
-    },
-    "STARFALL": {
-        "desc": "Beautiful and dreamy starlight pours into the world. Dark blue atmosphere, stars fall from sky.",
-        "spawn": "1 in 7500/s (0.013%/s)",
-        "duration": "10 minutes",
-        "bt": "5x multiplier",
-        "auras": "**Starlight** (1/10k), **StarRider** (1/10k), **Starlight: Kunzite** (1/200k), **Astral** (1/267k), **Orion** (1/600k), **Stargazer** (1/1.84M), **Starscourge** (1/2M), **Sirius** (1/2.8M), **Starborn** (1/14.4M), **Starscourge: Radiant** (1/20M), **Astral: Zodiac** (1/53.4M)",
-        "item": "Piece of Star (crafting + Grail +5% Luck, +2.5% Speed). Stella's Star spawns with 5% chance instead of potions.",
-        "color": 0xFFD700,
-        "emoji": "🌠",
-        "tip": "10-minute window — great for deep queuing. Has a 1/100 chance to become Singularity instead.",
-    },
-    "HEAVEN": {
-        "desc": "A hand of angel leads you into divine place. Yellow-themed map with mist and glowing sigil.",
-        "spawn": "1 in 7777/s (0.0129%/s)",
-        "duration": "4 minutes (240s)",
-        "bt": "5x multiplier",
-        "auras": "**Divinus** (1/6!), **Divinus: Angel** (1/24k), **Hope** (1/97.7k), **Faith** (1/1.45M), **Divinus: Guardian** (1/1.56M), **Icarus** (1/3.13M), **Oculus** (1/4.67M), **Dominion** (1/14M), **Prophecy** (1/55M), **Archangel** (1/70M), **Ascendant** (1/187M)",
-        "item": "Feather Vial (Angel's Feather Lantern crafting + Grail +5% Luck, +2.5% Speed)",
-        "color": 0xFFFACD,
-        "emoji": "☁️",
-        "tip": "Divinus drops at 1/6 — easiest Legendary! 4-minute window is shorter than Starfall.",
-    },
-    "CORRUPTION": {
-        "desc": "Poisonous pollution spreads throughout the world. Purple fog, purple water, purple orb on top.",
-        "spawn": "1 in 9000/s (0.011%/s)",
-        "duration": "~10 minutes 50 seconds (650s)",
-        "bt": "5x multiplier",
-        "auras": "**Hazard** (1/1.4k), **Corrosive** (1/2.4k), **Hazard: Rays** (1/14k), **Symbiosis** (1/266k), **Parasite** (1/600k), **Impeached** (1/40M), **Monarch** (1/3B — no BT!)",
-        "item": "Curruptaine (crafting + Grail +10% Luck, +5% Speed)",
-        "color": 0x8B0000,
-        "emoji": "☠️",
-        "tip": "Best Grail bonus (+10% Luck, +5% Speed). Monarch is Corruption or Glitched only — no breakthrough.",
-    },
-    "NULL": {
-        "desc": "It's too dark here. Gray-themed map. Cannot roll Breakthrough aura during this biome.",
-        "spawn": "1 in 10100/s (0.0075%/s)",
-        "duration": "99 seconds (1m 39s)",
-        "bt": "1000x multiplier (breakthrough is effectively impossible)",
-        "auras": "**Undefined** (1/1.1k), **Flowed** (1/2.1k), **Shiftlock** (1/3.3k), **Nihility** (1/9k). Special: **Breakthrough** (1/2B — CANNOT roll during Null!)",
-        "item": "NULL? (crafting + Grail +10% Luck, +5% Speed). Also needed for Limbo access.",
-        "color": 0x36393F,
-        "emoji": "⬛",
-        "tip": "Null is mostly a downside biome — 1000x BT makes outside rolling nearly impossible. Best use: collect NULL? item for Grail/crafting.",
-    },
-    "GLITCHED": {
-        "desc": "Rarest biome. Trees glow with glitchy computer fuzz, pitch-black sky, black/gray ground.",
-        "spawn": "1 in 30000 per biome change (0.003%)",
-        "duration": "2 minutes 44 seconds (164s)",
-        "bt": "N/A — all native auras (except Rare Biome auras) roll at native rarity!",
-        "auras": "**Fault** (1/3k), **Glitch** (1/12.2M), **Oppression** (1/220M). Plus ALL non-Rare-Biome auras at native rarity.",
-        "item": "None",
-        "color": 0x00FF88,
-        "emoji": "⚠️",
-        "tip": "Save Heavenly/Oblivion potions for Glitched. All native auras roll at full rarity — extremely high value window.",
-    },
-    "DREAMSPACE": {
-        "desc": "Pink-themed biome. Tables, doors, beds floating in sky. Pink trees, white wood, pink mist.",
-        "spawn": "1 in 3.5M/s during Normal biome only (effectively ~1/7.5M/s global)",
-        "duration": "3 minutes 12 seconds (192s)",
-        "bt": "N/A — no breakthrough available",
-        "auras": "**★** (1/100), **★★** (1/1k), **★★★** (1/10k), **Borealis** (1/13.3M), **Dreammetric** (1/320M)",
-        "item": "Heavenly Potions spawn (3% per 10s, 1 guaranteed on spawn)",
-        "color": 0xFF69B4,
-        "emoji": "💤",
-        "tip": "Only spawns during Normal biome. Save potions. Guaranteed Heavenly Potion on spawn — extremely rare biome.",
-    },
-    "CYBERSPACE": {
-        "desc": "Blue cyber-themed biome. Only accessible via Strange Controller or Biome Randomizer (1/5000).",
-        "spawn": "1 in 5000 via Strange Controller/Biome Randomizer only",
-        "duration": "12 minutes",
-        "bt": "2x multiplier",
-        "auras": "16 auras + 2 exclusives: **Forbidden** (1/202), **Player** (1/1.5k), **Meta** (1/10k — luck unaffected), **Illusionary** (1/10M — luck unaffected), **Matrix** (1/25M), **Antivirus** (1/31.25M), **Aegis** (1/412.5M), **Pixelation** (1/536.9M), and more.",
-        "item": "None",
-        "color": 0x00E5FF,
-        "emoji": "🖥️",
-        "tip": "12-minute window — longest standard biome. Maximise queue depth. Meta and Illusionary ignore luck buffs.",
-    },
-    "SINGULARITY": {
-        "desc": "Has a 1/100 chance to replace Starfall. Pulls in everything. 20-minute window or ends when Astraios is rolled.",
-        "spawn": "1/100 chance instead of Starfall (any spawn method)",
-        "duration": "20 minutes or until Astraios is rolled",
-        "bt": "5x multiplier",
-        "auras": "**Comet** (1/24k), **Pleiades** (1/65k), **Pulsar** (1/83k), **Constella** (1/87k), **Galaxy** (1/1M), **Vega** (1/2.58M), **Astronaut** (1/6.1M), **Centurion** (1/25M), **Gargantua** (1/86M), **Projection** (1/197M), **Point: Zero** (1/521M), **Astraios** (1/1.75B — no BT!)",
-        "item": "Accretion Disk buff (x1.1 Final Luck) if present before biome spawns",
-        "color": 0x9B59B6,
-        "emoji": "🌀",
-        "tip": "Queue ALL accounts immediately. Be present before spawn for Accretion Disk buff. Ends early if someone rolls Astraios.",
-    },
-}
-
-WIKI_EVENTS = {
-    "CHRISTMAS 2023": "First seasonal event. Added Snowy biome, +100% Luck buff, new gears and rarities. No special auras.",
-    "VALENTINES 2024": "Added NPC Lime, 4 limited auras (Divinus: Love, Flushed: Heart Eye, Celestial: Cupid, Blossom) via quests.",
-    "EASTER 2024": "Added egg hunt quests for Lime, Easter Blessing (+50% Luck), limited UGC rewards.",
-    "APRIL FOOLS 2024": "Added Defined (1/2222 in Null), Kromat1k (1/40M), Impeached: i'm peach (1/400M).",
-    "SUMMER 2024": "Added beach area, new quests with Lime/Jake, Surfer (quest reward), StarRider: Starfish (1/25k Starfall), Shard Surfer (1/75M Snowy), Watermelon (1/320k). Marine Amulet item.",
-    "INNOVATOR 2024": "Roblox Innovation Awards event. Innovator aura (1/30M), RIA Points currency, limited packs. x2 Luck effect.",
-    "HALLOWEEN 2024": "Added Pumpkin Moon & Graveyard biomes, Jack The Pumpkin merchant, 10 limited auras including Harvester (1/666M) and Apostolos: Veil (1/800M).",
-    "WINTER 2025": "Added Ticket currency, Roulette wheels, Santa NPC, 8 limited auras in Snowy biome including Atlas: Yuletide (1/170M). Blossom: Frozen via quests.",
-    "APRIL FOOLS 2025": "Added pukeko (1/3198), Flushed: Troll (1/1M), Origin: Onion (1/8M), Glock: the glock of the sky (1/170M). Sizemax/Sizemin potions.",
-    "EASTER 2025": "Added 9 Biome Egg auras (Windy Egg through Glitched Egg). Limited UGC: Glitched Egg (5000 stock).",
-    "SUMMER 2025": "Added Blazing Sun biome (1/4 chance at Daytime), Manta (1/150M Blazing Sun), Aegis: Watergun (1/412.5M), SandBasket, Bubble, Bioluminescent, Life Guard, Ink: PaintballGun, Parasol. Season Pass I.",
-    "HALLOWEEN 2025": "31 new auras across 2 parts. New Blood Rain biome (summoned by Cursed Rune Fragment). Bounty Medal currency. Erebus (1/1.2B) and Lamenthyr (1/1B) in Blood Rain. Season Pass III.",
-    "CHRISTMAS 2025": "22 new auras. Aurora biome (1/50k/s or via Glowing Snow Globe during Snowy). Snowflake currency, Memory Match game, Christmas Roulette. Dream Traveler (1/1B Aurora). Season Pass IV.",
-    "VALENTINES 2026": "Added Velvet (via quest) and Symphony: Bloomed (1/375M). 1 Lime quest.",
-    "EASTER 2026": "15 new auras. Eggland biome (replaces Normal). Egg drop system, Easter Points currency. Sky Festival (1/2B), Eggore (1/700M). Season Pass VI.",
-    "APRIL FOOLS 2026": "15 new auras. Includes Equinox: You Are An Idiot (1/2.5B), A Fool's Experience (1/1B), Pukeko: P.U.K.E.K.O.G.O.D. (1/1B). Previous pukeko/Troll brought back.",
-}
-
-WIKI_NPCS = {
-    "LIME": "Yellow-skinned NPC with black hair and white cat hoodie. Quest giver for all major events (Valentine's, Summer, Halloween, Christmas, Easter). Cannot be damaged.",
-    "JAKE": "Classic noob NPC with top hat. Owns Jake's Workshop (crafting station). Quest giver for Summer 2024. Cannot be damaged.",
-    "STELLA": "NPC in the cave (accessed via parkour or Star Portal). Witch outfit, black eyes, white hair. Manages the Cauldron for lantern crafting. Give her Stella's Star for portal access. Cannot be damaged.",
-    "MARI": "Traveling merchant who spawns randomly for 3 minutes. Sells potions (Lucky, Speed, Mixed, Fortune Spoids, Lucky Penny, Rainbow Syrup, Gear A/B). Can be damaged.",
-    "JESTER": "Traveling merchant who spawns randomly for 3 minutes. Sells Runes, Oblivion Potions (for 5 Void Coins), Strange Potions, Random Potion Sacks, Stella's Candles, Merchant Tracker, biome items exchange, Dark Points currency. Can be damaged.",
-    "RIN": "Traveling merchant who spawns randomly. Sells Talismans (Sunstone, Moonstone, Day+Night, Overtime, Soul Collector's, Soul Master's). Unlock items by completing Rin's Trails. Can be damaged.",
-    "JACK THE PUMPKIN": "Halloween event merchant. Sells items for Pump Tokens (2024) or Bounty Medals (2025). Features Aura Hunts in 2025. Spawns during Pumpkin Moon biome.",
-    "CAPTAIN FLARG": "Beach NPC. Resets daily shop. Players sell fish for Fish Points to spend in his shop.",
-    "FISCHL": "NPC near the camping area. Daily rotating shop (1-5 star items). Also displays your current Daily Quests.",
-    "RIG": "Former Jake replacement NPC. Now located near the Obby fishing area. Gives a quest on first interaction.",
-    "BOB": "Sells Roblox UGC items related to Sol's RNG. Located near Rig's former spot.",
-    "DAVE": "NPC on 2nd island of The Limbo. Gives quests rewarding pages, recipes, and Darklight items. Dave's Hope buffs (x1.2–x2 Luck in Limbo).",
-    "EDEN": "NPC on 4th island of The Limbo. Spawn rate 1/50k every 2 minutes. Give him a Void Heart to receive the Eden aura.",
-    "UNNAMED ENTITY": "Unnamed NPC in the caves. Added in Eon 1-1. Got interaction in Eon 1-4.5. Speculated to be related to The Limbo.",
-    "VOICE FROM NOWHERE": "Summoned by Oblivion aura's \"Call\" ability. Initiates dialogue when interacted with. Says \"What did you call me for?\"",
-}
-
-WIKI_ITEMS = {
-    "LUCKY POTION": "Gives +25% Luck for 1 minute. Stackable for duration. Found on map, from Mari, Jester, or Fishing Shop.",
-    "SPEED POTION": "Gives +10% Roll Speed for 30 seconds. Stackable. Found on map, from Mari, Jester, or Fishing Shop.",
-    "FORTUNE POTION I": "Gives +50% Luck for 5 minutes. Craft: 10x Lucky Potion. Or from Daily Quests.",
-    "FORTUNE POTION II": "Gives +75% Luck for 5 minutes. Craft: 25x Lucky Potion. Cannot stack with Fortune I or III.",
-    "FORTUNE POTION III": "Gives +100% Luck for 5 minutes. Craft: 50x Lucky Potion.",
-    "HASTE POTION I": "Gives +20% Roll Speed for 5 minutes. Craft: 10x Speed Potion.",
-    "HASTE POTION II": "Gives +25% Roll Speed for 5 minutes. Craft: 25x Speed Potion.",
-    "HASTE POTION III": "Gives +30% Roll Speed for 5 minutes. Craft: 50x Speed Potion. Also from Fishing Shop.",
-    "HEAVENLY POTION": "Gives +15,000,000% Luck (+150,000) for ONE roll. Current craftable recipe requires Lucky Potions, Celestial, Exotic, Powered, and Quartz. Also drops during Dreamspace biome.",
-    "OBLIVION POTION": "Gives +60,000,000% Luck for ONE roll. Negates all buffs. Only way to get Oblivion (1/2000) and Memory (1/100). From Jester for 5 Void Coins.",
-    "WARP POTION": "Sets rolling cooldown to INSTANT for 2000 rolls. Craft: 1x Arcane, 5x Comet, 100x Powered, 200x Lunar, 1000x Speed Potion.",
-    "TRANSCENDENT POTION": "Sets rolling cooldown to INSTANT for 20000 rolls. Obtained from achievements (20M, 30M, 50M, 100M rolls) or Innovator Pack Vol-3.",
-    "POTION OF BOUND": "Gives +5,000,000% Luck for ONE roll. Craft: 1x Bounded, 3x Permafrost, 10x Lost Soul, 100x Lucky Potion. Also from Jester, Fischl, Fishing Shop.",
-    "GODLIKE POTION": "Gives +40,000,000% Luck for ONE roll. Requires all 3 Godly Potions + 600x Lucky Potion.",
-    "STRANGE CONTROLLER": "Changes the biome respecting normal rarities. 20-minute personal cooldown, 10-minute server cooldown. Craft using 7 biome-exclusive items (NULL?, Eternal Flame, Piece of Star, Curruptaine, Rainy Bottle, Icicle, Wind Essence).",
-    "BIOME RANDOMIZER": "Changes biome to random (equal chance for all except Glitched which stays at 1/30k). 35-minute personal cooldown, 20-minute server cooldown. Craft: 7 specific auras + 4x Strange Controller.",
-    "BIOME SELECTOR": "Changes biome on command (no Rare/Event biomes). 1-hour cooldown. Craft: 1x Biome Randomizer + 1x Cyber Technology.",
-    "VOID COIN": "Currency for Jester (used to buy Oblivion Potion for 5 Void Coins). Spawns at 0.02%/hour at night. Also from achievements and Mari for $500k.",
-    "RUNE OF EVERYTHING": "Lets you roll all biome-exclusive auras at native rarity for 5 minutes (except Glitched/Dreamspace auras). From Jester for 3000 Dark Points.",
-}
-
-WIKI_AURA_TIERS = {
-    "Basic": "1 in 1 – 1 in 999. Common auras like Common (1/2), Rare (1/16), Divinus (1/32 in Heaven).",
-    "Epic": "1 in 1,000 – 1 in 9,999. Examples: Undead (1/2k in Hell), Glacier (1/768 in Snowy).",
-    "Unique": "1 in 10,000 – 1 in 99,998. Examples: Starlight (1/10k in Starfall), Solar (1/5k Daytime), Lunar (1/5k Nighttime).",
-    "Legendary": "1 in 99,999 – 1 in 999,999. Examples: Exotic (1/99999), Comet (1/24k Singularity), Divinus: Angel (1/24k Heaven).",
-    "Mythic": "1 in 1M – 1 in 9.99M. Examples: Galaxy (1/1M Singularity), Arcane (1/1M), Hades (1/1.1M Hell).",
-    "Exalted": "1 in 10M – 1 in 99.9M. Examples: Starscourge (1/2M Starfall), Matrix (1/25M Cyberspace), Archangel (1/70M Heaven).",
-    "Glorious": "1 in 100M – 1 in 999M. Examples: Abyssal Hunter (1/100M Rainy), Atlas (1/90M Sandstorm), Pixelation (1/536M Cyberspace).",
-    "Transcendent": "1 in 1B – 1 in 7.5B. Examples: Leviathan (1/1.73B Rainy), Breakthrough (1/2B — cannot roll in Null!), Equinox (1/2.5B).",
-    "Dimensional": "1 in 7.5B+. Only: MasterHand (craftable). The rarest tier.",
-    "Challenged": "Biome-exclusive or condition-exclusive. Examples: Glitch (Glitched only), Oppression (Glitched only), Dreammetric (Dreamspace only), Astraios (Singularity only), Monarch (Corruption/Glitched only).",
-    "Challenged+": "Extremely rare condition-exclusive. Examples: Oblivion (from Oblivion Potion, 1/2000), Memory (from Oblivion Potion, 1/100), Eden (give Void Heart to Eden NPC).",
-    "Event": "Limited-time seasonal auras. Cannot be obtained outside their event period.",
-}
-
-def _wiki_biome_embed(name: str):
-    key  = name.upper().replace("-", " ").replace("_", " ")
-    data = None
-    for k, v in WIKI_BIOMES.items():
-        if key in k or k in key or k.startswith(key[:4]):
-            data = v; key = k; break
-    if not data:
-        return None, None
-    embed = discord.Embed(
-        title=f"{data['emoji']}  Sol's RNG Wiki — {key} Biome",
-        description=f"*{data['desc']}*",
-        color=data["color"],
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.add_field(name="🎲 Spawn Rate",   value=data["spawn"],    inline=True)
-    embed.add_field(name="⏱️ Duration",    value=data["duration"],  inline=True)
-    embed.add_field(name="🔄 Breakthrough", value=data["bt"],        inline=True)
-    embed.add_field(name="✨ Native Auras", value=data["auras"],     inline=False)
-    embed.add_field(name="📦 Biome Item",   value=data["item"],      inline=False)
-    embed.add_field(name="💡 Strategy Tip", value=f"*{data['tip']}*",inline=False)
-    embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Biomes"))
-    return embed, key
-
-def _wiki_event_embed(name: str):
-    key  = name.upper()
-    data = None
-    for k, v in WIKI_EVENTS.items():
-        if key in k or k in key:
-            data = v; key = k; break
-    if not data:
-        return None, None
-    embed = discord.Embed(
-        title=f"🎉  Sol's RNG Wiki — {key}",
-        description=data,
-        color=0xFF69B4,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Events"))
-    return embed, key
-
-def _wiki_npc_embed(name: str):
-    key  = name.upper()
-    data = None
-    for k, v in WIKI_NPCS.items():
-        if key in k or k in key:
-            data = v; key = k; break
-    if not data:
-        return None, None
-    embed = discord.Embed(
-        title=f"🧑  Sol's RNG Wiki — {key}",
-        description=data,
-        color=0x00FFA3,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  NPCs"))
-    return embed, key
-
-def _wiki_item_embed(name: str):
-    key  = name.upper()
-    data = None
-    for k, v in WIKI_ITEMS.items():
-        if key in k or k in key:
-            data = v; key = k; break
-    if not data:
-        return None, None
-    embed = discord.Embed(
-        title=f"🧪  Sol's RNG Wiki — {key}",
-        description=data,
-        color=0xF59E0B,
-        timestamp=datetime.now(timezone.utc),
-    )
-    embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Items"))
-    return embed, key
-
-@bot.command(name="wiki", aliases=["w", "srng"])
-async def cmd_wiki(ctx, category: str = None, *, query: str = None):
-    """Sol's RNG wiki: !wiki biome <name> | !wiki aura <tier> | !wiki event <name> | !wiki npc <name> | !wiki item <name> | !wiki biomes | !wiki events | !wiki auras"""
-    if not _cmd_guard(ctx): return
-
-    if not category:
-        embed = discord.Embed(
-            title="📖  Sol's RNG Wiki",
-            description=(
-                "**Welcome to the Sol's RNG Wiki branch!**\n\n"
-                "Use `!wiki <category> <name>` to look up game info:\n\u200b"
-            ),
-            color=0xFF69B4,
-            timestamp=datetime.now(timezone.utc),
-        )
-        embed.add_field(name="🌍 `!wiki biome <name>`",  value="Look up a biome (spawn rate, auras, tips)", inline=False)
-        embed.add_field(name="✨ `!wiki aura <tier>`",   value="Look up an aura rarity tier (basic, epic, unique...)", inline=False)
-        embed.add_field(name="🎉 `!wiki event <name>`",  value="Look up a seasonal event and its content", inline=False)
-        embed.add_field(name="🧑 `!wiki npc <name>`",   value="Look up an NPC (Lime, Jake, Stella, Mari, Jester...)", inline=False)
-        embed.add_field(name="🧪 `!wiki item <name>`",  value="Look up a potion, gear, or item", inline=False)
-        embed.add_field(name="📋 List Commands:",
-            value="`!wiki biomes` — list all biomes\n`!wiki events` — list all events\n`!wiki auras` — aura rarity table",
-            inline=False)
-        embed.set_footer(text=_zite_footer("Sol's RNG Wiki"))
-        await ctx.send(embed=embed)
-        return
-
-    cat = category.lower()
-
-    if cat == "biomes":
-        lines = []
-        for k, d in WIKI_BIOMES.items():
-            emoji = d['emoji']; spawn = d['spawn']; dur = d['duration']
-            lines.append(f"{emoji} **{k}** — Spawn: {spawn} | Duration: {dur}")
-        embed = discord.Embed(title="🌍  Sol's RNG — All Biomes", description="\n".join(lines), color=0x00E5FF, timestamp=datetime.now(timezone.utc))
-        embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Biomes List"))
-        await ctx.send(embed=embed)
-        return
-
-    if cat == "events":
-        lines = [f"🎉 **{k}**" for k in WIKI_EVENTS.keys()]
-        embed = discord.Embed(title="🎉  Sol's RNG — All Events", description="\n".join(lines), color=0xFF69B4, timestamp=datetime.now(timezone.utc))
-        embed.add_field(name="ℹ️ Usage", value="`!wiki event <name>` for details on any event", inline=False)
-        embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Events List"))
-        await ctx.send(embed=embed)
-        return
-
-    if cat == "auras":
-        embed = discord.Embed(title="✨  Sol's RNG — Aura Rarity Tiers", description="Aura rarity classifications from common to ultra-rare:", color=0xFFD700, timestamp=datetime.now(timezone.utc))
-        tier_colors = {"Basic":"🩶","Epic":"🟣","Unique":"🔵","Legendary":"🟡","Mythic":"🟠","Exalted":"🔴","Glorious":"🌟","Transcendent":"💫","Dimensional":"🌀","Challenged":"⚠️","Challenged+":"🚫","Event":"🎉"}
-        for tier, desc in WIKI_AURA_TIERS.items():
-            icon = tier_colors.get(tier, "▪️")
-            embed.add_field(name=f"{icon} **{tier}**", value=desc, inline=False)
-        embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Aura Tiers"))
-        await ctx.send(embed=embed)
-        return
-
-    if not query:
-        await ctx.send(embed=discord.Embed(
-            description=f"❌ Please provide a name. Example: `!wiki {cat} singularity`",
-            color=0xFF2A2A))
-        return
-
-    if cat in ("biome", "b"):
-        embed, matched = _wiki_biome_embed(query)
-        if not embed:
-            names = ", ".join(f"`{k.title()}`" for k in WIKI_BIOMES.keys())
-            await ctx.send(embed=discord.Embed(description=f"❌ Biome `{query}` not found.\n**Available:** {names}", color=0xFF2A2A))
-            return
-        await ctx.send(embed=embed)
-
-    elif cat in ("event", "e"):
-        embed, matched = _wiki_event_embed(query)
-        if not embed:
-            await ctx.send(embed=discord.Embed(description=f"❌ Event `{query}` not found.\nUse `!wiki events` to see all events.", color=0xFF2A2A))
-            return
-        await ctx.send(embed=embed)
-
-    elif cat in ("npc", "n"):
-        embed, matched = _wiki_npc_embed(query)
-        if not embed:
-            names = ", ".join(f"`{k.title()}`" for k in WIKI_NPCS.keys())
-            await ctx.send(embed=discord.Embed(description=f"❌ NPC `{query}` not found.\n**Available:** {names}", color=0xFF2A2A))
-            return
-        await ctx.send(embed=embed)
-
-    elif cat in ("item", "i", "potion"):
-        embed, matched = _wiki_item_embed(query)
-        if not embed:
-            names = ", ".join(f"`{k.title()}`" for k in list(WIKI_ITEMS.keys())[:10])
-            await ctx.send(embed=discord.Embed(description=f"❌ Item `{query}` not found.\nTry: {names}...", color=0xFF2A2A))
-            return
-        await ctx.send(embed=embed)
-
-    elif cat in ("aura", "a"):
-        key  = query.upper()
-        data = None
-        for k, v in WIKI_AURA_TIERS.items():
-            if key in k.upper() or k.upper() in key:
-                data = v; key = k; break
-        if not data:
-            embed = discord.Embed(
-                title=f"✨  Sol's RNG Wiki — Aura Search: {query}",
-                description=(
-                    f"Could not find a specific aura tier matching `{query}`.\n\n"
-                    f"**Use `!wiki auras`** to see all rarity tiers, or search for a biome with\n"
-                    f"`!wiki biome <name>` to see that biome's native auras."
-                ),
-                color=0xFFD700,
-                timestamp=datetime.now(timezone.utc),
-            )
-            embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Auras"))
-            await ctx.send(embed=embed)
-        else:
-            embed = discord.Embed(
-                title=f"✨  Sol's RNG Wiki — {key} Tier",
-                description=data,
-                color=0xFFD700,
-                timestamp=datetime.now(timezone.utc),
-            )
-            embed.set_footer(text=_zite_footer("Sol's RNG Wiki  •  Aura Tiers"))
-            await ctx.send(embed=embed)
-    else:
-        await ctx.send(embed=discord.Embed(
-            description=(
-                f"❌ Unknown category `{category}`.\n\n"
-                "**Valid categories:** `biome`, `aura`, `event`, `npc`, `item`\n"
-                "**List commands:** `!wiki biomes`, `!wiki events`, `!wiki auras`\n\n"
-                "Or just use `!wiki` for the full overview."
-            ),
-            color=0xFF2A2A))
+                                 account_identity, is_forwarder, t0, macro_source)
 
 
 # ── Boot ──────────────────────────────────────────────────────────────────────
