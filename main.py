@@ -167,9 +167,7 @@ MERCHANT_TIPS = {
 }
 
 # ── 7. Macro Source Detection ─────────────────────────────────────────────────
-# Each entry: (name, patterns_to_match_in_combined_text, link_field_names)
 MACRO_SOURCE_PATTERNS = [
-    # Coteab / Noteab Macro — "Mari has arrived!" title + "Detection Source" field + "Coteab Macro" footer
     {
         "name": "Coteab Macro",
         "title_patterns": [r"has arrived", r"biome started", r"biome ended",
@@ -179,7 +177,6 @@ MACRO_SOURCE_PATTERNS = [
         "footer_patterns": [r"coteab macro", r"noteab macro", r"coteab v"],
         "private_server_patterns": [r"private server", r"ps link", r"join server"],
     },
-    # MultiScope V1/V2
     {
         "name": "MultiScope",
         "title_patterns": [r"multiscope", r"biome alert", r"merchant alert"],
@@ -188,7 +185,6 @@ MACRO_SOURCE_PATTERNS = [
         "footer_patterns": [r"multiscope"],
         "private_server_patterns": [r"private server", r"server link"],
     },
-    # SolsScope
     {
         "name": "SolsScope",
         "title_patterns": [r"solsscope", r"sols scope"],
@@ -197,7 +193,6 @@ MACRO_SOURCE_PATTERNS = [
         "footer_patterns": [r"solsscope"],
         "private_server_patterns": [r"private server"],
     },
-    # FishScope
     {
         "name": "FishScope",
         "title_patterns": [r"fishscope", r"fish scope"],
@@ -206,7 +201,6 @@ MACRO_SOURCE_PATTERNS = [
         "footer_patterns": [r"fishscope"],
         "private_server_patterns": [r"private server"],
     },
-    # FishSol
     {
         "name": "FishSol",
         "title_patterns": [r"fishsol", r"fish sol"],
@@ -215,7 +209,6 @@ MACRO_SOURCE_PATTERNS = [
         "footer_patterns": [r"fishsol"],
         "private_server_patterns": [r"private server"],
     },
-    # Maxstellar
     {
         "name": "Maxstellar",
         "title_patterns": [r"maxstellar"],
@@ -224,7 +217,6 @@ MACRO_SOURCE_PATTERNS = [
         "footer_patterns": [r"maxstellar"],
         "private_server_patterns": [r"private server"],
     },
-    # Radiance
     {
         "name": "Radiance Macro",
         "title_patterns": [r"radiance macro", r"radiance"],
@@ -233,7 +225,6 @@ MACRO_SOURCE_PATTERNS = [
         "footer_patterns": [r"radiance"],
         "private_server_patterns": [r"private server"],
     },
-    # DroidScope
     {
         "name": "DroidScope",
         "title_patterns": [r"droidscope", r"droid scope"],
@@ -242,7 +233,6 @@ MACRO_SOURCE_PATTERNS = [
         "footer_patterns": [r"droidscope"],
         "private_server_patterns": [r"private server"],
     },
-    # Slaoq
     {
         "name": "Slaoq Sniper",
         "title_patterns": [r"slaoq", r"sols rng sniper"],
@@ -251,7 +241,6 @@ MACRO_SOURCE_PATTERNS = [
         "footer_patterns": [r"slaoq"],
         "private_server_patterns": [r"private server"],
     },
-    # RNGsus
     {
         "name": "RNGsus",
         "title_patterns": [r"rngsus"],
@@ -260,7 +249,6 @@ MACRO_SOURCE_PATTERNS = [
         "footer_patterns": [r"rngsus"],
         "private_server_patterns": [r"private server"],
     },
-    # StayActive
     {
         "name": "StayActive",
         "title_patterns": [r"stayactive", r"stay active"],
@@ -269,7 +257,6 @@ MACRO_SOURCE_PATTERNS = [
         "footer_patterns": [r"stayactive"],
         "private_server_patterns": [r"private server"],
     },
-    # Oyster Detector
     {
         "name": "Oyster Detector",
         "title_patterns": [r"oyster"],
@@ -376,13 +363,11 @@ def _detect_macro_source(embed: discord.Embed) -> str:
 
     for macro in MACRO_SOURCE_PATTERNS:
         matched = False
-        # Check footer patterns (most reliable)
         for pat in macro.get("footer_patterns", []):
             if re.search(pat, combined_lower):
                 matched = True
                 break
         if not matched:
-            # Check field patterns
             for pat in macro.get("field_patterns", []):
                 if re.search(pat, combined_lower):
                     matched = True
@@ -403,14 +388,11 @@ def _extract_private_server_link(embed: discord.Embed, macro_source: str) -> tup
         name_low = (f.name or "").lower()
         val      = f.value or ""
 
-        # Coteab Macro: "Join Server" field contains the link as a hyperlink
         if any(kw in name_low for kw in ["join server", "private server",
                                           "server link", "ps link", "join"]):
-            # Extract URL from markdown hyperlink [text](url) or raw
             m = re.search(r'\(?(https?://[^\s\)]+)\)?', val)
             if m:
                 return m.group(1), f"Embed Field: {f.name} [{macro_source}]"
-            # Also check raw roblox links
             m = ROBLOX_LINK_RE.search(val)
             if m:
                 return m.group(0), f"Embed Field: {f.name} [{macro_source}]"
@@ -419,12 +401,10 @@ def _extract_private_server_link(embed: discord.Embed, macro_source: str) -> tup
     if embed.description:
         combined_full += " " + embed.description
 
-    # Fallback: scan for any Roblox share link in the whole embed
     m = ROBLOX_LINK_RE.search(combined_full)
     if m:
         return m.group(0), f"Embed Text Scan [{macro_source}]"
 
-    # Check message components / buttons (handled outside, but try URL fields)
     return None, "None"
 
 # ── 10. Persistence ───────────────────────────────────────────────────────────
@@ -980,7 +960,6 @@ def _extract_combined_text(message: discord.Message):
     link_vector = "None"
     roblox_link = None
 
-    # Check message-level components (buttons)
     if message.components:
         for row in message.components:
             for comp in getattr(row, 'children', []):
@@ -1000,12 +979,10 @@ def _extract_combined_text(message: discord.Message):
                 parts.append(emb.author.name)
             for f in emb.fields:
                 parts += [f.name or "", f.value or ""]
-                # Coteab Macro: extract URL from "Join Server" field
                 name_low = (f.name or "").lower()
                 val      = f.value or ""
                 if any(kw in name_low for kw in
                        ["join server", "private server", "server link", "ps link"]):
-                    # Try markdown link first: [text](url)
                     m = re.search(r'\[.*?\]\((https?://[^\s\)]+)\)', val)
                     if m and "roblox.com" in m.group(1):
                         roblox_link = m.group(1)
@@ -1017,7 +994,6 @@ def _extract_combined_text(message: discord.Message):
                             link_vector = f"Embed Field [{f.name}]"
             combined += " " + " ".join(parts)
 
-    # Fallback: scan raw content for Roblox link
     if not roblox_link:
         m = ROBLOX_LINK_RE.search(combined)
         if m:
@@ -1220,7 +1196,6 @@ MOBILE_MACROS = [
 ]
 
 # In-memory application state per user
-# app_state[user_id] = { "step": ..., "device": ..., "macro": ..., "macro_url": ..., "hours": ..., "msg_id": ... }
 app_state: dict = {}
 
 # ─── Views ────────────────────────────────────────────────────────────────────
@@ -1245,7 +1220,6 @@ class DeviceSelectView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         msg_id = str(interaction.message.id)
-        # If already claimed by someone else
         if msg_id in claimed_applications:
             if claimed_applications[msg_id] != interaction.user.id:
                 await interaction.response.send_message(
@@ -1258,9 +1232,7 @@ class DeviceSelectView(discord.ui.View):
     @discord.ui.button(label="🖥️ Desktop", style=discord.ButtonStyle.primary, custom_id="dev_desktop")
     async def desktop(self, interaction: discord.Interaction, button: discord.ui.Button):
         msg_id = str(interaction.message.id)
-        # Claim this application
         claimed_applications[msg_id] = interaction.user.id
-        # Check role
         if not _has_wants_to_macro_role(interaction.user):
             await interaction.response.send_message(
                 "❌ You need the **Wants to Macro** role to use this application.",
@@ -1333,11 +1305,9 @@ class MacroDropdown(discord.ui.Select):
             return
         choice = self.values[0]
         if choice == "__others__":
-            # Ask user to type the macro name via a modal
             modal = OthersMacroModal(self.owner_id, self.device)
             await interaction.response.send_modal(modal)
             return
-        # Find URL
         macro_list = DESKTOP_MACROS if self.device == "Desktop" else MOBILE_MACROS
         url = "N/A"
         for name, u, _ in macro_list:
@@ -1424,7 +1394,6 @@ class HoursModal(discord.ui.Modal, title="How many hours can you AFK per day?"):
         app_state[self.owner_id]["hours"] = hours
         app_state[self.owner_id]["step"]  = "confirm_hours"
 
-        # Calculate feedback
         if hours < 1:
             feedback = "⚠️ That's under 1 hour. **Try re-managing your time, okay?**"
             color    = 0xFF4500
@@ -1438,7 +1407,6 @@ class HoursModal(discord.ui.Modal, title="How many hours can you AFK per day?"):
             color    = 0x00FFA3
             can_proceed = True
 
-        # Calculate what time window they'd need to hit 3h
         if hours >= 3:
             needed_start = "Any time works!"
         else:
@@ -1469,7 +1437,6 @@ class HoursConfirmView(discord.ui.View):
     @discord.ui.button(label="✅ Yes, continue", style=discord.ButtonStyle.success)
     async def yes_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.can_proceed:
-            # Not enough hours — decline
             embed = _appli_embed(
                 "❌  Application Declined",
                 "Your available AFK time is too low to qualify.\n\n"
@@ -1479,7 +1446,6 @@ class HoursConfirmView(discord.ui.View):
             )
             await interaction.response.edit_message(embed=embed, view=None)
             return
-        # Enough hours — show the note/agreement
         view  = AgreementView(self.owner_id)
         embed = _appli_embed(
             "📋  Step 4 — Server Agreement",
@@ -1635,7 +1601,6 @@ def _build_application_start_embed() -> discord.Embed:
 def _build_application_summary_embed(member: discord.Member, state: dict, preview=False) -> discord.Embed:
     macro_list = DESKTOP_MACROS if state.get("device") == "Desktop" else MOBILE_MACROS
     macro_url  = state.get("macro_url", "N/A")
-    # Try to find URL if it's from the known list
     for name, url, _ in macro_list:
         clean = name.replace(" ✅", "").replace(" ❌", "")
         if clean == state.get("macro"):
@@ -1683,7 +1648,6 @@ async def _finalize_application(interaction: discord.Interaction):
     member = interaction.user
     state  = app_state.get(member.id, {})
 
-    # Grant Macro Trail Verifying role
     guild = interaction.guild
     role  = guild.get_role(MACRO_TRAIL_VERIFYING_ROLE) if guild else None
     role_granted = False
@@ -1694,13 +1658,10 @@ async def _finalize_application(interaction: discord.Interaction):
         except discord.Forbidden:
             log.warning(f"APPLI: Cannot grant role to {member}")
 
-    # Build summary embed
     summary_embed = _build_application_summary_embed(member, state, preview=False)
 
-    # Update the application message
     await interaction.response.edit_message(embed=summary_embed, view=None)
 
-    # Send summary to user DM
     try:
         await member.send(
             content=(
@@ -1713,7 +1674,6 @@ async def _finalize_application(interaction: discord.Interaction):
     except discord.Forbidden:
         log.warning(f"APPLI: Cannot DM {member} — DMs closed.")
 
-    # Send copy to server-output
     server_output_ch = bot.get_channel(SERVER_OUTPUT_CHANNEL_ID)
     if server_output_ch:
         notif_embed = discord.Embed(
@@ -1746,27 +1706,26 @@ async def _finalize_application(interaction: discord.Interaction):
 async def cmd_macros_appli(ctx):
     """
     Admin-deployable macro application form.
-    Can be used in any channel whose name contains '-ticket'.
+    Can be used in any channel whose name starts with 'ticket-'.
     """
-    # Must be in a ticket channel
-    if "-ticket" not in ctx.channel.name.lower():
+    # Must be in a ticket- channel
+    if not ctx.channel.name.lower().startswith("ticket-"):
         await ctx.send(
             embed=discord.Embed(
-                description="❌ This command can only be used in ticket channels (channel name must contain `-ticket`).",
+                description="❌ This command can only be used in ticket channels (channel name must start with `ticket-`).",
                 color=0xFF2A2A,
             ),
             delete_after=10,
         )
         return
 
-    # Delete the invoking message to keep the channel clean
     try:
         await ctx.message.delete()
     except discord.Forbidden:
         pass
 
     embed = _build_application_start_embed()
-    view  = DeviceSelectView(owner_id=0)   # owner_id=0 means "anyone can claim"
+    view  = DeviceSelectView(owner_id=0)
     msg   = await ctx.send(embed=embed, view=view)
 
     log.info(f"APPLI: Application posted in #{ctx.channel.name} by {ctx.author} (msg={msg.id})")
@@ -1880,7 +1839,6 @@ async def on_message(message: discord.Message):
 
     combined_full, roblox_link, link_vector = _extract_combined_text(message)
 
-    # Detect macro source from first embed (most reliable)
     macro_source = "Unknown Macro"
     if message.embeds:
         macro_source = _detect_macro_source(message.embeds[0])
@@ -1896,7 +1854,6 @@ async def on_message(message: discord.Message):
             webhook_activity[cid_str]["total_messages"] += 1
             webhook_activity[cid_str].setdefault("accounts", {})
 
-        # Use roblox_link as account key, or fallback to account number
         if roblox_link:
             acc_reg = webhook_activity[cid_str]["accounts"]
             if roblox_link not in acc_reg:
@@ -1907,10 +1864,7 @@ async def on_message(message: discord.Message):
                 }
             account_identity = acc_reg[roblox_link]["display_name"]
         else:
-            # Coteab and others may not have PS link in start message
-            # Try to find an existing account or create one per channel
             acc_reg = webhook_activity[cid_str]["accounts"]
-            # Use a sentinel key per macro source so we can still track
             sentinel_key = f"__no_link_{macro_source}_{cid_str}__"
             if sentinel_key not in acc_reg:
                 acc_reg[sentinel_key] = {
@@ -1928,12 +1882,10 @@ async def on_message(message: discord.Message):
     guild_name = message.guild.name if message.guild else "Private Guild"
 
     for emb in message.embeds:
-        # Per-embed link extraction (Coteab puts PS in embed field)
         emb_link, emb_vector = _extract_private_server_link(emb, macro_source)
         if emb_link:
             roblox_link = emb_link
             link_vector = emb_vector
-            # Re-register under the correct PS link key
             if not is_forwarder and roblox_link:
                 acc_reg = webhook_activity[cid_str]["accounts"]
                 if roblox_link not in acc_reg:
