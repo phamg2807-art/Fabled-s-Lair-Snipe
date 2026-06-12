@@ -206,19 +206,9 @@ def init_db():
     conn = db()
     cur = conn.cursor()
 
-    # Drop old tables completely
-    cur.execute("DROP TABLE IF EXISTS coins CASCADE")
-    cur.execute("DROP TABLE IF EXISTS users CASCADE")
-    cur.execute("DROP TABLE IF EXISTS trades CASCADE")
-    cur.execute("DROP TABLE IF EXISTS auctions CASCADE")
-    cur.execute("DROP TABLE IF EXISTS bank CASCADE")
-    cur.execute("DROP TABLE IF EXISTS bank_log CASCADE")
-    cur.execute("DROP TABLE IF EXISTS daily_log CASCADE")
-    cur.execute("DROP TABLE IF EXISTS credit_log CASCADE")
-
-    # Create users table
+    # Create users table if not exists
     cur.execute("""
-        CREATE TABLE users (
+        CREATE TABLE IF NOT EXISTS users (
             user_id       BIGINT PRIMARY KEY,
             username      TEXT,
             credits       INT DEFAULT 0,
@@ -233,61 +223,94 @@ def init_db():
         );
     """)
 
-    # Create coins table with ALL columns
+    # Create coins table if not exists
     cur.execute("""
-        CREATE TABLE coins (
-            id SERIAL PRIMARY KEY,
-            owner_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
-            material TEXT,
-            variant TEXT,
-            status TEXT,
-            float TEXT,
-            serial INT,
-            base_value FLOAT DEFAULT 0,
-            mat_mult FLOAT DEFAULT 1,
-            var_mult FLOAT DEFAULT 1,
-            sta_mult FLOAT DEFAULT 1,
-            flt_mult FLOAT DEFAULT 1,
-            ser_mult FLOAT DEFAULT 1,
-            total_mult FLOAT DEFAULT 1,
-            value FLOAT DEFAULT 0,
+        CREATE TABLE IF NOT EXISTS coins (
+            id          SERIAL PRIMARY KEY,
+            owner_id    BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
+            material    TEXT,
+            variant     TEXT,
+            status      TEXT,
+            float       TEXT,
+            serial      INT,
+            base_value  FLOAT DEFAULT 0,
+            mat_mult    FLOAT DEFAULT 1,
+            var_mult    FLOAT DEFAULT 1,
+            sta_mult    FLOAT DEFAULT 1,
+            flt_mult    FLOAT DEFAULT 1,
+            ser_mult    FLOAT DEFAULT 1,
+            total_mult  FLOAT DEFAULT 1,
+            value       FLOAT DEFAULT 0,
             custom_name TEXT DEFAULT NULL,
             obtained_at TIMESTAMP DEFAULT NOW()
         );
     """)
 
+    # Add any missing columns to coins (safe migration)
+    migrations = [
+        ("base_value",  "FLOAT DEFAULT 0"),
+        ("mat_mult",    "FLOAT DEFAULT 1"),
+        ("var_mult",    "FLOAT DEFAULT 1"),
+        ("sta_mult",    "FLOAT DEFAULT 1"),
+        ("flt_mult",    "FLOAT DEFAULT 1"),
+        ("ser_mult",    "FLOAT DEFAULT 1"),
+        ("total_mult",  "FLOAT DEFAULT 1"),
+        ("value",       "FLOAT DEFAULT 0"),
+        ("custom_name", "TEXT DEFAULT NULL"),
+        ("obtained_at", "TIMESTAMP DEFAULT NOW()"),
+    ]
+    for col, col_def in migrations:
+        cur.execute(f"""
+            ALTER TABLE coins ADD COLUMN IF NOT EXISTS {col} {col_def};
+        """)
+
+    # Add missing columns to users
+    user_migrations = [
+        ("last_msg_ts",  "BIGINT DEFAULT 0"),
+        ("last_work_ts", "BIGINT DEFAULT 0"),
+        ("last_rob_ts",  "BIGINT DEFAULT 0"),
+        ("prestige",     "INT DEFAULT 0"),
+        ("total_coins",  "INT DEFAULT 0"),
+        ("daily_streak", "INT DEFAULT 0"),
+        ("joined_at",    "TIMESTAMP DEFAULT NOW()"),
+    ]
+    for col, col_def in user_migrations:
+        cur.execute(f"""
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {col_def};
+        """)
+
     # Create trades table
     cur.execute("""
-        CREATE TABLE trades (
-            id SERIAL PRIMARY KEY,
-            initiator_id BIGINT,
-            receiver_id BIGINT,
-            coin_ids TEXT,
+        CREATE TABLE IF NOT EXISTS trades (
+            id            SERIAL PRIMARY KEY,
+            initiator_id  BIGINT,
+            receiver_id   BIGINT,
+            coin_ids      TEXT,
             credits_offer INT DEFAULT 0,
-            status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT NOW()
+            status        TEXT DEFAULT 'pending',
+            created_at    TIMESTAMP DEFAULT NOW()
         );
     """)
 
     # Create auctions table
     cur.execute("""
-        CREATE TABLE auctions (
-            id SERIAL PRIMARY KEY,
-            seller_id BIGINT,
-            coin_id INT,
-            start_price INT,
-            current_bid INT DEFAULT 0,
-            bidder_id BIGINT,
-            ends_at TIMESTAMP,
-            status TEXT DEFAULT 'active',
-            created_at TIMESTAMP DEFAULT NOW()
+        CREATE TABLE IF NOT EXISTS auctions (
+            id           SERIAL PRIMARY KEY,
+            seller_id    BIGINT,
+            coin_id      INT,
+            start_price  INT,
+            current_bid  INT DEFAULT 0,
+            bidder_id    BIGINT,
+            ends_at      TIMESTAMP,
+            status       TEXT DEFAULT 'active',
+            created_at   TIMESTAMP DEFAULT NOW()
         );
     """)
 
     # Create bank table
     cur.execute("""
-        CREATE TABLE bank (
-            id INT PRIMARY KEY DEFAULT 1,
+        CREATE TABLE IF NOT EXISTS bank (
+            id    INT PRIMARY KEY DEFAULT 1,
             total INT DEFAULT 0
         );
     """)
@@ -295,35 +318,35 @@ def init_db():
 
     # Create log tables
     cur.execute("""
-        CREATE TABLE bank_log(
-            id SERIAL PRIMARY KEY,
-            source TEXT,
-            amount INT,
+        CREATE TABLE IF NOT EXISTS bank_log (
+            id        SERIAL PRIMARY KEY,
+            source    TEXT,
+            amount    INT,
             logged_at TIMESTAMP DEFAULT NOW()
         );
     """)
 
     cur.execute("""
-        CREATE TABLE daily_log(
+        CREATE TABLE IF NOT EXISTS daily_log (
             paid_date DATE PRIMARY KEY,
-            amount INT,
-            paid_at TIMESTAMP DEFAULT NOW()
+            amount    INT,
+            paid_at   TIMESTAMP DEFAULT NOW()
         );
     """)
 
     cur.execute("""
-        CREATE TABLE credit_log(
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT,
-            amount INT,
-            reason TEXT,
+        CREATE TABLE IF NOT EXISTS credit_log (
+            id        SERIAL PRIMARY KEY,
+            user_id   BIGINT,
+            amount    INT,
+            reason    TEXT,
             logged_at TIMESTAMP DEFAULT NOW()
         );
     """)
 
     conn.commit()
     release(conn)
-    print("✅ Database initialized with all columns!")
+    print("✅ Database initialized (safe migrations applied)!")
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 def ensure_user(user_id: int, username: str):
@@ -806,7 +829,7 @@ async def daily(ctx):
 
     today = datetime.now(timezone.utc).date()
     last_daily = u.get('last_daily')
-    
+
     if last_daily and last_daily == today:
         tomorrow = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
         diff = tomorrow - datetime.now(timezone.utc)
