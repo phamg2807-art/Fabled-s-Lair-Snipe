@@ -223,6 +223,7 @@ def init_db():
         );
     """)
 
+    # Add missing user columns
     user_columns = [
         ("daily_streak", "INT DEFAULT 0"),
         ("last_work_ts", "BIGINT DEFAULT 0"),
@@ -232,45 +233,42 @@ def init_db():
     ]
 
     for col, definition in user_columns:
-        cur.execute(
-            f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition};"
-        )
-
+        try:
+            cur.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='users' AND column_name=%s
+            """, (col,))
+            if not cur.fetchone():
+                cur.execute(f"ALTER TABLE users ADD COLUMN {col} {definition};")
+                print(f"✅ Added missing column: users.{col}")
+        except Exception as e:
+            print(f"⚠️ Error adding user column {col}: {e}")
 
     # ─── COINS TABLE ─────────────────────────────
     cur.execute("""
         CREATE TABLE IF NOT EXISTS coins (
             id SERIAL PRIMARY KEY,
             owner_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
-
             material TEXT,
             variant TEXT,
             status TEXT,
             float TEXT,
-
             serial INT,
-
             base_value FLOAT DEFAULT 0,
-
             mat_mult FLOAT DEFAULT 1,
             var_mult FLOAT DEFAULT 1,
             sta_mult FLOAT DEFAULT 1,
             flt_mult FLOAT DEFAULT 1,
             ser_mult FLOAT DEFAULT 1,
-
             total_mult FLOAT DEFAULT 1,
-
             value FLOAT DEFAULT 0,
-
             custom_name TEXT DEFAULT NULL,
-
             obtained_at TIMESTAMP DEFAULT NOW()
         );
     """)
 
-
-    # IMPORTANT FIX
-    # Adds missing columns to OLD databases
+    # Add missing coin columns
     coin_columns = [
         ("base_value", "FLOAT DEFAULT 0"),
         ("mat_mult", "FLOAT DEFAULT 1"),
@@ -285,18 +283,28 @@ def init_db():
     ]
 
     for col, definition in coin_columns:
-        cur.execute(
-            f"ALTER TABLE coins ADD COLUMN IF NOT EXISTS {col} {definition};"
-        )
-
+        try:
+            cur.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='coins' AND column_name=%s
+            """, (col,))
+            if not cur.fetchone():
+                cur.execute(f"ALTER TABLE coins ADD COLUMN {col} {definition};")
+                print(f"✅ Added missing column: coins.{col}")
+        except Exception as e:
+            print(f"⚠️ Error adding coin column {col}: {e}")
 
     # Repair old coins missing values
-    cur.execute("""
-        UPDATE coins
-        SET value = base_value * total_mult
-        WHERE value IS NULL OR value = 0;
-    """)
-
+    try:
+        cur.execute("""
+            UPDATE coins
+            SET value = base_value * total_mult
+            WHERE value IS NULL OR value = 0;
+        """)
+        print("✅ Repaired coin values")
+    except Exception as e:
+        print(f"⚠️ Error repairing coin values: {e}")
 
     # ─── TRADES ─────────────────────────────
     cur.execute("""
@@ -310,7 +318,6 @@ def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         );
     """)
-
 
     # ─── AUCTIONS ─────────────────────────────
     cur.execute("""
@@ -327,7 +334,6 @@ def init_db():
         );
     """)
 
-
     # ─── BANK ─────────────────────────────
     cur.execute("""
         CREATE TABLE IF NOT EXISTS bank (
@@ -340,9 +346,7 @@ def init_db():
         "INSERT INTO bank(id,total) VALUES(1,0) ON CONFLICT(id) DO NOTHING;"
     )
 
-
     # ─── LOG TABLES ─────────────────────────────
-
     cur.execute("""
         CREATE TABLE IF NOT EXISTS bank_log(
             id SERIAL PRIMARY KEY,
@@ -352,7 +356,6 @@ def init_db():
         );
     """)
 
-
     cur.execute("""
         CREATE TABLE IF NOT EXISTS daily_log(
             paid_date DATE PRIMARY KEY,
@@ -360,7 +363,6 @@ def init_db():
             paid_at TIMESTAMP DEFAULT NOW()
         );
     """)
-
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS credit_log(
@@ -371,7 +373,6 @@ def init_db():
             logged_at TIMESTAMP DEFAULT NOW()
         );
     """)
-
 
     conn.commit()
     release(conn)
