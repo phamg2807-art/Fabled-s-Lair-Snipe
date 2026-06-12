@@ -206,9 +206,19 @@ def init_db():
     conn = db()
     cur = conn.cursor()
 
-    # ─── USERS TABLE ─────────────────────────────
+    # Drop old tables completely
+    cur.execute("DROP TABLE IF EXISTS coins CASCADE")
+    cur.execute("DROP TABLE IF EXISTS users CASCADE")
+    cur.execute("DROP TABLE IF EXISTS trades CASCADE")
+    cur.execute("DROP TABLE IF EXISTS auctions CASCADE")
+    cur.execute("DROP TABLE IF EXISTS bank CASCADE")
+    cur.execute("DROP TABLE IF EXISTS bank_log CASCADE")
+    cur.execute("DROP TABLE IF EXISTS daily_log CASCADE")
+    cur.execute("DROP TABLE IF EXISTS credit_log CASCADE")
+
+    # Create users table
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE users (
             user_id       BIGINT PRIMARY KEY,
             username      TEXT,
             credits       INT DEFAULT 0,
@@ -223,31 +233,9 @@ def init_db():
         );
     """)
 
-    # Add missing user columns
-    user_columns = [
-        ("daily_streak", "INT DEFAULT 0"),
-        ("last_work_ts", "BIGINT DEFAULT 0"),
-        ("last_rob_ts", "BIGINT DEFAULT 0"),
-        ("prestige", "INT DEFAULT 0"),
-        ("total_coins", "INT DEFAULT 0"),
-    ]
-
-    for col, definition in user_columns:
-        try:
-            cur.execute("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name='users' AND column_name=%s
-            """, (col,))
-            if not cur.fetchone():
-                cur.execute(f"ALTER TABLE users ADD COLUMN {col} {definition};")
-                print(f"✅ Added missing column: users.{col}")
-        except Exception as e:
-            print(f"⚠️ Error adding user column {col}: {e}")
-
-    # ─── COINS TABLE ─────────────────────────────
+    # Create coins table with ALL columns
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS coins (
+        CREATE TABLE coins (
             id SERIAL PRIMARY KEY,
             owner_id BIGINT REFERENCES users(user_id) ON DELETE CASCADE,
             material TEXT,
@@ -268,47 +256,9 @@ def init_db():
         );
     """)
 
-    # Add missing coin columns
-    coin_columns = [
-        ("base_value", "FLOAT DEFAULT 0"),
-        ("mat_mult", "FLOAT DEFAULT 1"),
-        ("var_mult", "FLOAT DEFAULT 1"),
-        ("sta_mult", "FLOAT DEFAULT 1"),
-        ("flt_mult", "FLOAT DEFAULT 1"),
-        ("ser_mult", "FLOAT DEFAULT 1"),
-        ("total_mult", "FLOAT DEFAULT 1"),
-        ("value", "FLOAT DEFAULT 0"),
-        ("custom_name", "TEXT DEFAULT NULL"),
-        ("obtained_at", "TIMESTAMP DEFAULT NOW()"),
-    ]
-
-    for col, definition in coin_columns:
-        try:
-            cur.execute("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name='coins' AND column_name=%s
-            """, (col,))
-            if not cur.fetchone():
-                cur.execute(f"ALTER TABLE coins ADD COLUMN {col} {definition};")
-                print(f"✅ Added missing column: coins.{col}")
-        except Exception as e:
-            print(f"⚠️ Error adding coin column {col}: {e}")
-
-    # Repair old coins missing values
-    try:
-        cur.execute("""
-            UPDATE coins
-            SET value = base_value * total_mult
-            WHERE value IS NULL OR value = 0;
-        """)
-        print("✅ Repaired coin values")
-    except Exception as e:
-        print(f"⚠️ Error repairing coin values: {e}")
-
-    # ─── TRADES ─────────────────────────────
+    # Create trades table
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS trades (
+        CREATE TABLE trades (
             id SERIAL PRIMARY KEY,
             initiator_id BIGINT,
             receiver_id BIGINT,
@@ -319,9 +269,9 @@ def init_db():
         );
     """)
 
-    # ─── AUCTIONS ─────────────────────────────
+    # Create auctions table
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS auctions (
+        CREATE TABLE auctions (
             id SERIAL PRIMARY KEY,
             seller_id BIGINT,
             coin_id INT,
@@ -334,21 +284,18 @@ def init_db():
         );
     """)
 
-    # ─── BANK ─────────────────────────────
+    # Create bank table
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS bank (
+        CREATE TABLE bank (
             id INT PRIMARY KEY DEFAULT 1,
             total INT DEFAULT 0
         );
     """)
+    cur.execute("INSERT INTO bank(id,total) VALUES(1,0) ON CONFLICT DO NOTHING;")
 
-    cur.execute(
-        "INSERT INTO bank(id,total) VALUES(1,0) ON CONFLICT(id) DO NOTHING;"
-    )
-
-    # ─── LOG TABLES ─────────────────────────────
+    # Create log tables
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS bank_log(
+        CREATE TABLE bank_log(
             id SERIAL PRIMARY KEY,
             source TEXT,
             amount INT,
@@ -357,7 +304,7 @@ def init_db():
     """)
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS daily_log(
+        CREATE TABLE daily_log(
             paid_date DATE PRIMARY KEY,
             amount INT,
             paid_at TIMESTAMP DEFAULT NOW()
@@ -365,7 +312,7 @@ def init_db():
     """)
 
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS credit_log(
+        CREATE TABLE credit_log(
             id SERIAL PRIMARY KEY,
             user_id BIGINT,
             amount INT,
@@ -376,8 +323,7 @@ def init_db():
 
     conn.commit()
     release(conn)
-
-    print("✅ Database initialized + repaired.")
+    print("✅ Database initialized with all columns!")
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 def ensure_user(user_id: int, username: str):
@@ -470,7 +416,7 @@ async def on_message(message):
     if now - last >= MSG_COOLDOWN_S:
         MSG_COOLDOWNS[uid] = now
         u = get_user(uid)
-        prestige_val = u['prestige'] if u and 'prestige' in u and u['prestige'] is not None else 0
+        prestige_val = u['prestige'] if u and u.get('prestige') else 0
         bonus = int(CREDITS_PER_MSG * prestige_multiplier(prestige_val))
         add_credits(uid, bonus, "message")
     await bot.process_commands(message)
@@ -531,7 +477,6 @@ async def auction_checker():
 
 @tasks.loop(hours=24)
 async def daily_bank_distribution():
-    """Distribute bank balance equally to all users once a day."""
     bank_total = get_bank()
     if bank_total <= 0:
         return
@@ -555,7 +500,7 @@ async def daily_bank_distribution():
     cur.execute("INSERT INTO daily_log (paid_date, amount) VALUES (%s, %s)", (today, share))
     conn.commit()
     release(conn)
-    print(f"✅ Daily bank payout: {share:,} credits to {n} users. Bank was {bank_total:,}.")
+    print(f"✅ Daily bank payout: {share:,} credits to {n} users.")
 
 # ─── Trade View ───────────────────────────────────────────────────────────────
 class TradeView(discord.ui.View):
@@ -779,7 +724,7 @@ async def on_command_error(ctx, error):
     elif isinstance(error, commands.CommandNotFound):
         pass
     else:
-        raise error
+        print(f"Error: {error}")
 
 # ─── COMMANDS ─────────────────────────────────────────────────────────────────
 
@@ -843,14 +788,14 @@ async def balance(ctx):
     portfolio = cur.fetchone()['pv']
     release(conn)
 
-    prestige_val = u['prestige'] if u['prestige'] is not None else 0
+    prestige_val = u.get('prestige') or 0
     pmult = prestige_multiplier(prestige_val)
     e = discord.Embed(title=f"💳 {ctx.author.display_name}'s Balance", color=0x57F287)
     e.add_field(name="🎟️ Credits",         value=f"**{u['credits']:,}**",         inline=True)
     e.add_field(name="🪙 Coins Owned",      value=f"**{u['total_coins']}**",        inline=True)
     e.add_field(name="📈 Portfolio Value",  value=f"**${portfolio:.4f}**",          inline=True)
     e.add_field(name="⭐ Prestige",         value=f"**{prestige_val}** (×{pmult:.1f} earnings)", inline=True)
-    e.add_field(name="🔥 Daily Streak",     value=f"**{u['daily_streak']}** days",  inline=True)
+    e.add_field(name="🔥 Daily Streak",     value=f"**{u.get('daily_streak', 0)}** days",  inline=True)
     await ctx.send(embed=e)
 
 @bot.command()
@@ -860,7 +805,9 @@ async def daily(ctx):
     u = get_user(uid)
 
     today = datetime.now(timezone.utc).date()
-    if u['last_daily'] == today:
+    last_daily = u.get('last_daily')
+    
+    if last_daily and last_daily == today:
         tomorrow = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
         diff = tomorrow - datetime.now(timezone.utc)
         h, rem = divmod(int(diff.total_seconds()), 3600)
@@ -869,10 +816,10 @@ async def daily(ctx):
         return
 
     yesterday = today - timedelta(days=1)
-    streak = (u['daily_streak'] + 1) if u['last_daily'] == yesterday else 1
+    streak = (u.get('daily_streak', 0) + 1) if last_daily == yesterday else 1
 
     streak_bonus = min(streak - 1, 7) * DAILY_STREAK_BONUS
-    prestige_val = u['prestige'] if u['prestige'] is not None else 0
+    prestige_val = u.get('prestige') or 0
     prestige_mult = prestige_multiplier(prestige_val)
     total = int((DAILY_CREDITS + streak_bonus) * prestige_mult)
 
@@ -904,7 +851,7 @@ async def work(ctx):
 
     now_ts = int(time.time())
     cooldown_s = WORK_COOLDOWN_H * 3600
-    elapsed = now_ts - (u['last_work_ts'] or 0)
+    elapsed = now_ts - (u.get('last_work_ts') or 0)
 
     if elapsed < cooldown_s:
         remaining = cooldown_s - elapsed
@@ -914,7 +861,7 @@ async def work(ctx):
         return
 
     earned = random.randint(WORK_MIN, WORK_MAX)
-    prestige_val = u['prestige'] if u['prestige'] is not None else 0
+    prestige_val = u.get('prestige') or 0
     earned = int(earned * prestige_multiplier(prestige_val))
     action = random.choice(WORK_ACTIONS)
 
@@ -946,7 +893,7 @@ async def rob(ctx, target: discord.Member):
     u = get_user(uid)
     now_ts = int(time.time())
     cooldown_s = ROB_COOLDOWN_H * 3600
-    elapsed = now_ts - (u['last_rob_ts'] or 0)
+    elapsed = now_ts - (u.get('last_rob_ts') or 0)
 
     if elapsed < cooldown_s:
         remaining = cooldown_s - elapsed
@@ -1073,7 +1020,7 @@ async def prestige(ctx):
         await ctx.send(f"❌ Prestige costs **{PRESTIGE_COST:,} credits**. You have **{u['credits']:,}**.")
         return
 
-    prestige_val = u['prestige'] if u['prestige'] is not None else 0
+    prestige_val = u.get('prestige') or 0
     new_prestige = prestige_val + 1
     conn = db()
     cur = conn.cursor()
@@ -1694,7 +1641,7 @@ async def profile(ctx, member: discord.Member = None):
     trades_done = cur.fetchone()['c']
     release(conn)
 
-    prestige_val = u['prestige'] if u['prestige'] is not None else 0
+    prestige_val = u.get('prestige') or 0
     pmult = prestige_multiplier(prestige_val)
     e = discord.Embed(title=f"👤 {target.display_name}'s Profile", color=0x5865F2)
     e.set_thumbnail(url=target.display_avatar.url)
@@ -1704,7 +1651,7 @@ async def profile(ctx, member: discord.Member = None):
     e.add_field(name="📈 Portfolio",       value=f"${total_val:.4f}",             inline=True)
     e.add_field(name="🏆 Best Coin",       value=f"${best['value']:.4f}" if best else "None", inline=True)
     e.add_field(name="🛒 Sales / Trades",  value=f"{sales} / {trades_done}",      inline=True)
-    e.add_field(name="🔥 Daily Streak",    value=f"{u['daily_streak']} days",     inline=True)
+    e.add_field(name="🔥 Daily Streak",    value=f"{u.get('daily_streak', 0)} days",     inline=True)
     e.set_footer(text=f"Member since {u['joined_at'].strftime('%Y-%m-%d')}")
     await ctx.send(embed=e)
 
@@ -1727,7 +1674,7 @@ async def leaderboard(ctx):
     medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
     e = discord.Embed(title="🏆 CoinVault — Top Collectors (by Portfolio)", color=0xFFD700)
     for i, r in enumerate(rows):
-        prestige_val = r['prestige'] if r['prestige'] is not None else 0
+        prestige_val = r.get('prestige') or 0
         star = f"⭐×{prestige_val}" if prestige_val else ""
         e.add_field(
             name=f"{medals[i]} {r['username']} {star}",
@@ -1752,7 +1699,7 @@ async def richlist(ctx):
     medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
     e = discord.Embed(title="💰 CoinVault — Credit Rich List", color=0x57F287)
     for i, r in enumerate(rows):
-        prestige_val = r['prestige'] if r['prestige'] is not None else 0
+        prestige_val = r.get('prestige') or 0
         star = f" ⭐×{prestige_val}" if prestige_val else ""
         e.add_field(
             name=f"{medals[i]} {r['username']}{star}",
@@ -1804,7 +1751,7 @@ async def stats(ctx):
     top_mats = cur.fetchall()
     release(conn)
 
-    prestige_val = u['prestige'] if u['prestige'] is not None else 0
+    prestige_val = u.get('prestige') or 0
     pmult = prestige_multiplier(prestige_val)
     e = discord.Embed(title=f"📊 Stats — {ctx.author.display_name}", color=0x5865F2)
     e.add_field(name="🎟️ Credits",          value=f"{u['credits']:,}",          inline=True)
@@ -1813,7 +1760,7 @@ async def stats(ctx):
     e.add_field(name="🪙 Coins Owned",       value=str(cs['c'] or 0),            inline=True)
     e.add_field(name="📈 Portfolio Value",   value=f"${cs['s']:.4f}",            inline=True)
     e.add_field(name="🤝 Trades Done",       value=str(trades_done),             inline=True)
-    e.add_field(name="🔥 Daily Streak",      value=f"{u['daily_streak']} days",  inline=True)
+    e.add_field(name="🔥 Daily Streak",      value=f"{u.get('daily_streak', 0)} days",  inline=True)
     if top_mats:
         e.add_field(name="🏅 Top Materials", value="\n".join(f"{r['material']}: {r['c']}" for r in top_mats), inline=True)
     await ctx.send(embed=e)
